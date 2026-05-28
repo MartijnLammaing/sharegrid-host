@@ -84,6 +84,7 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
   let socket: TLSSocket | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
   let previousTokenTimer: NodeJS.Timeout | null = null;
+  let backoffTimer: NodeJS.Timeout | null = null;
   let hostId = '';
   let currentToken = '';
   let previousToken: string | null = null;
@@ -310,7 +311,9 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
     let delay = BACKOFF_INITIAL_MS;
     while (!stopped) {
       log.warn({ delayMs: delay }, 'attempting reconnect to router');
-      await sleep(delay);
+      await new Promise<void>((resolve) => {
+        backoffTimer = setTimeout(() => { backoffTimer = null; resolve(); }, delay);
+      });
       if (stopped) break;
       try {
         await connect();
@@ -342,6 +345,7 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
       stopped = true;
       clearHeartbeat();
       clearPreviousTokenTimer();
+      if (backoffTimer !== null) { clearTimeout(backoffTimer); backoffTimer = null; }
       if (socket !== null && !socket.destroyed) {
         await new Promise<void>((resolve) => {
           socket!.end(() => resolve());

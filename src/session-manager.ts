@@ -364,7 +364,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           resolve();
           return;
         }
-        server.close(() => resolve());
+        // Force-resolve after 3 s so teardown never hangs indefinitely.
+        const fallback = setTimeout(() => resolve(), 3_000);
+        server.close(() => { clearTimeout(fallback); resolve(); });
       });
     },
 

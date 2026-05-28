@@ -26,6 +26,12 @@ import type { Config } from './config.js';
 export interface InferenceProxyDeps {
   config: Config;
   logger: Logger;
+  /**
+   * Override the Unix socket path used to reach llama.cpp.
+   * Defaults to `/tmp/llama.sock` (the fixed in-container path).
+   * Pass a custom path in integration tests to avoid cross-test conflicts.
+   */
+  llamaSocketPath?: string;
 }
 
 export interface InferenceProxy {
@@ -50,7 +56,7 @@ const FLUSH_TIMEOUT_MS = 5_000;
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
-  const { config, logger } = deps;
+  const { config, logger, llamaSocketPath = LLAMA_SOCKET_PATH } = deps;
   const log = logger.child({ component: 'inference-proxy' });
 
   // ── sendPrompt ────────────────────────────────────────────────────────────
@@ -69,7 +75,7 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
     return new Promise<void>((resolve) => {
       const req = httpRequest(
         {
-          socketPath: LLAMA_SOCKET_PATH,
+          socketPath: llamaSocketPath,
           path: '/v1/chat/completions',
           method: 'POST',
           headers: {
@@ -152,7 +158,7 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
 
       const req = httpRequest(
         {
-          socketPath: LLAMA_SOCKET_PATH,
+          socketPath: llamaSocketPath,
           path: '/slots/0',
           method: 'DELETE',
         },
