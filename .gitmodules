@@ -1,0 +1,3 @@
+[submodule "sharegrid-shared"]
+	path = sharegrid-shared
+	url = git@github.com:MartijnLammaing/sharegrid-shared.git

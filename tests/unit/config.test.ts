@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { MockInstance } from '@vitest/spy';
 
 // loadConfig reads process.env at call time, so we must set env before importing.
 // We reset modules before each test to get a fresh module evaluation.
@@ -11,13 +12,15 @@ describe('loadConfig', () => {
     SHAREGRID_MODEL_CONTEXT_SIZE: '4096',
   };
 
-  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let exitSpy: MockInstance<(code?: number) => never>;
 
   beforeEach(() => {
     vi.resetModules();
-    exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number): never => {
-      throw new Error('process.exit called');
-    });
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(
+      (_code?: string | number | null): never => {
+        throw new Error('process.exit called');
+      },
+    );
   });
 
   afterEach(() => {
