@@ -1,2 +1,12 @@
-// Stub — will be implemented in Phase 2 (task 2-2).
-export const _loggerStub = undefined;
+import pino from 'pino';
+
+const transport =
+  process.env['NODE_ENV'] !== 'production'
+    ? { target: 'pino-pretty', options: { colorize: true } }
+    : undefined;
+
+const rootLogger = pino({ level: 'info', transport });
+
+export function createComponentLogger(component: string): pino.Logger {
+  return rootLogger.child({ component });
+}
