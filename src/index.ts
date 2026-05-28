@@ -1,2 +1,116 @@
-// Stub — will be implemented in Phase 3D (tasks 3D-1 through 3D-2).
-export const _indexStub = undefined;
+/**
+ * LLMHost entry point — wires all components together and manages the process lifecycle.
+ *
+ * Startup sequence (tasks 3D-1, 3D-2):
+ *  1. Load and validate configuration.
+ *  2. Construct logger.
+ *  3. Create InferenceProxy.
+ *  4. Create SessionManager.
+ *  5. Create RouterClient (callbacks wire the two together).
+ *  6. Start SessionManager (bind TLS port).
+ *  7. Start RouterClient (connect, register, begin heartbeat loop).
+ *  8. Register SIGTERM/SIGINT for graceful shutdown.
+ *
+ * See: docs/architecture_llmhost.md §3
+ *      docs/implementation_plan_llmhost.md Phase 3D
+ */
+
+import { loadConfig } from './config.js';
+import { createComponentLogger } from './logger.js';
+import { createInferenceProxy } from './inference-proxy.js';
+import { createSessionManager } from './session-manager.js';
+import { createRouterClient } from './router-client.js';
+import type { TokenState } from './session-manager.js';
+
+async function main(): Promise<void> {
+  // 1. Config — exits on invalid input.
+  const config = loadConfig();
+
+  // 2. Logger.
+  const logger = createComponentLogger('main');
+  logger.info('starting LLMHost');
+
+  // 3. Inference proxy.
+  const inferenceProxy = createInferenceProxy({ config, logger });
+
+  // 4. Session manager.
+  const sessionManager = createSessionManager({ config, logger, inferenceProxy });
+
+  // Stable registration state — populated on first onRegistered and reused in onTokenUpdate.
+  let registrationHostId = '';
+  let registrationRouterPublicKey = '';
+
+  // 5. Router client — callbacks link the two components.
+  const routerClient = createRouterClient({
+    config,
+    logger,
+    onRegistered: (info) => {
+      registrationHostId = info.hostId;
+      registrationRouterPublicKey = info.routerPublicKey;
+
+      const state: TokenState = {
+        hostId: info.hostId,
+        currentToken: info.currentToken,
+        previousToken: info.previousToken,
+        previousTokenExpiresAt: 0,
+        routerPublicKey: info.routerPublicKey,
+      };
+      sessionManager.updateTokens(state);
+      sessionManager.setRegistered(true);
+    },
+    onTokenUpdate: (update) => {
+      const state: TokenState = {
+        hostId: registrationHostId,
+        routerPublicKey: registrationRouterPublicKey,
+        currentToken: update.currentToken,
+        previousToken: update.previousToken,
+        previousTokenExpiresAt: 0,
+      };
+      sessionManager.updateTokens(state);
+    },
+    onDisconnect: () => {
+      sessionManager.setRegistered(false);
+    },
+  });
+
+  // 6. Start session manager (binds port; resolves once listening).
+  await sessionManager.start(routerClient.getTlsCert(), routerClient.getTlsKey());
+  logger.info({ port: config.SHAREGRID_LISTEN_PORT }, 'session manager started');
+
+  // 7. Register SIGTERM/SIGINT before connecting to the router.
+  const DRAIN_TIMEOUT_MS = 10_000;
+  let shuttingDown = false;
+
+  async function shutdown(signal: string): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, 'received shutdown signal');
+
+    // Stop accepting new sessions immediately.
+    sessionManager.setRegistered(false);
+
+    // Give any active session a grace period to drain.
+    await sleep(DRAIN_TIMEOUT_MS);
+
+    await routerClient.stop();
+    await sessionManager.stop();
+    logger.info('graceful shutdown complete');
+    process.exit(0);
+  }
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+
+  // 8. Start router client — resolves after first successful registration.
+  await routerClient.start();
+  logger.info('router registration complete — host is ready');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+main().catch((err: unknown) => {
+  console.error('fatal error during startup:', err);
+  process.exit(1);
+});
