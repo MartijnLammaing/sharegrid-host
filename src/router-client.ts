@@ -45,6 +45,7 @@ export interface TokenUpdate {
 export interface RouterClientDeps {
   config: Config;
   logger: Logger;
+  modelName: string;
   onRegistered: (info: RegisteredInfo) => void;
   onTokenUpdate: (update: TokenUpdate) => void;
   onDisconnect: () => void;
@@ -69,7 +70,7 @@ const BACKOFF_CAP_MS = 60_000;
 const PREVIOUS_TOKEN_TTL_MS = 60_000;
 
 export function createRouterClient(deps: RouterClientDeps): RouterClient {
-  const { config, logger, onRegistered, onTokenUpdate, onDisconnect } = deps;
+  const { config, logger, modelName, onRegistered, onTokenUpdate, onDisconnect } = deps;
   const log = logger.child({ component: 'router-client' });
 
   // ── TLS keypair (generated once, held in memory) ──────────────────────────
@@ -217,8 +218,7 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
       const payload: RegistrationPayload = {
         v: PROTOCOL_VERSION,
         type: 'register',
-        modelName: config.SHAREGRID_MODEL_NAME,
-        contextSize: config.SHAREGRID_MODEL_CONTEXT_SIZE,
+        modelName,
         port: config.SHAREGRID_LISTEN_PORT,
         tlsFingerprint,
       };

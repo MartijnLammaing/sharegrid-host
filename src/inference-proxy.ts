@@ -17,14 +17,12 @@
 import { request as httpRequest } from 'node:http';
 import type { Logger } from 'pino';
 import type { ChatMessage } from '@sharegrid/shared/protocol';
-import type { Config } from './config.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface InferenceProxyDeps {
-  config: Config;
   logger: Logger;
   /**
    * Override the Unix socket path used to reach llama.cpp.
@@ -56,7 +54,7 @@ const FLUSH_TIMEOUT_MS = 5_000;
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
-  const { config, logger, llamaSocketPath = LLAMA_SOCKET_PATH } = deps;
+  const { logger, llamaSocketPath = LLAMA_SOCKET_PATH } = deps;
   const log = logger.child({ component: 'inference-proxy' });
 
   // ── sendPrompt ────────────────────────────────────────────────────────────
@@ -67,9 +65,9 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
     onEnd: () => void,
   ): Promise<void> {
     const body = JSON.stringify({
-      model: config.SHAREGRID_MODEL_NAME,
       messages,
       stream: true,
+      repeat_penalty: 1.1,
     });
 
     return new Promise<void>((resolve) => {

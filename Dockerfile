@@ -22,6 +22,7 @@ RUN cmake -S /src/llama.cpp -B /build \
         -DGGML_NATIVE=OFF \
         -DGGML_CUDA=OFF \
         -DGGML_METAL=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
     && cmake --build /build --target llama-server -j"$(nproc)"
 
 RUN mkdir -p /app && cp /build/bin/llama-server /app/llama-server
@@ -38,56 +39,63 @@ WORKDIR /app
 
 # Build @sharegrid/shared first — it is a file: dependency and must be
 # compiled before npm ci can install it correctly.
-COPY sharegrid-shared/package.json sharegrid-shared/package-lock.json \
+COPY sharegrid-host/sharegrid-shared/package.json sharegrid-host/sharegrid-shared/package-lock.json \
      ./sharegrid-shared/
 RUN cd sharegrid-shared && npm ci --ignore-scripts
-COPY sharegrid-shared/src       ./sharegrid-shared/src
-COPY sharegrid-shared/tsconfig.json \
-     sharegrid-shared/tsconfig.build.json \
+COPY sharegrid-host/sharegrid-shared/src       ./sharegrid-shared/src
+COPY sharegrid-host/sharegrid-shared/tsconfig.json \
+     sharegrid-host/sharegrid-shared/tsconfig.build.json \
      ./sharegrid-shared/
 RUN cd sharegrid-shared && npm run build
 
 # Build the host bundle.
-COPY package.json package-lock.json ./
+COPY sharegrid-host/package.json sharegrid-host/package-lock.json ./
 RUN npm ci --ignore-scripts
-COPY src         ./src
-COPY tsconfig.json tsconfig.build.json ./
+COPY sharegrid-host/src         ./src
+COPY sharegrid-host/tsconfig.json sharegrid-host/tsconfig.build.json ./
 RUN npm run build
 
 # =============================================================================
-# Stage 3 — Runtime (distroless)
+# Stage 3 — Runtime
 #
-# Minimal runtime: only the llama-server binary and the Node.js bundle.
-# No shell, no package manager, no debugging tools.
+# node:22-slim rather than distroless: llama-server requires C++ runtime
+# libraries (libstdc++, libgcc) that are present in debian:12-slim but absent
+# from the distroless image.
 #
-# Build-time ENV defaults for model metadata. Override when building a
-# model-specific image variant, e.g.:
+# Build-time configuration:
 #
 #   docker build \
-#     --build-arg MODEL_NAME=llama-3-8b-instruct-q4 \
-#     --build-arg MODEL_CONTEXT_SIZE=8192 \
-#     -t registry/llmhost-llama3-8b:latest .
+#     --build-arg MODEL_FILE=sharegrid-host/models/my-model.gguf \
+#     -t sharegrid-host .
 #
 # See: docs/architecture_llmhost.md §2.5 (build-time configuration)
 # =============================================================================
-FROM gcr.io/distroless/nodejs22-debian12 AS runtime
+FROM node:22-slim AS runtime
 
-# Placeholders — always overridden in model-specific image builds.
-ENV SHAREGRID_MODEL_NAME="placeholder-model" \
-    SHAREGRID_MODEL_CONTEXT_SIZE="4096"
+# libgomp1 is required by llama-server (OpenMP runtime); not included in node:22-slim.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# The distroless image ships a pre-created nonroot user (uid 65532).
-USER nonroot:nonroot
+# Create a dedicated non-root user/group for the host process.
+RUN groupadd --gid 1001 sharegrid \
+    && useradd --uid 1001 --gid sharegrid --no-create-home sharegrid
+
+ARG MODEL_FILE
+ENV NODE_ENV=production \
+    SHAREGRID_MODEL_FILE="${MODEL_FILE}" \
+    SHAREGRID_MODEL_PATH="/data/model.gguf"
+
+USER sharegrid
 
 COPY --from=llama-builder /app/llama-server     /app/llama-server
 COPY --from=node-builder  /app/dist/bundle.cjs  /app/bundle.cjs
+COPY ${MODEL_FILE} /data/model.gguf
 
 # Healthcheck script: probes llama.cpp's GET /health endpoint over the
-# internal Unix socket. The distroless image has no shell so CMD must be
-# the exec form invoking Node.js directly.
-COPY scripts/healthcheck.js /app/healthcheck.js
+# internal Unix socket.
+COPY sharegrid-host/scripts/healthcheck.js /app/healthcheck.js
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD ["node", "/app/healthcheck.js"]
 
-CMD ["/app/bundle.cjs"]
+CMD ["node", "/app/bundle.cjs"]

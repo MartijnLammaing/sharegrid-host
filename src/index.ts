@@ -15,8 +15,10 @@
  *      docs/implementation_plan_llmhost.md Phase 3D
  */
 
+import { basename } from 'node:path';
 import { loadConfig } from './config.js';
 import { createComponentLogger } from './logger.js';
+import { launchLlama } from './llama-launcher.js';
 import { createInferenceProxy } from './inference-proxy.js';
 import { createSessionManager } from './session-manager.js';
 import { createRouterClient } from './router-client.js';
@@ -30,20 +32,26 @@ async function main(): Promise<void> {
   const logger = createComponentLogger('main');
   logger.info('starting LLMHost');
 
-  // 3. Inference proxy.
-  const inferenceProxy = createInferenceProxy({ config, logger });
+  // 3. Launch llama-server and wait for the Unix socket to be ready.
+  await launchLlama({ config, logger });
 
-  // 4. Session manager.
+  const modelName = basename(config.SHAREGRID_MODEL_FILE, '.gguf');
+
+  // 4. Inference proxy.
+  const inferenceProxy = createInferenceProxy({ logger });
+
+  // 5. Session manager.
   const sessionManager = createSessionManager({ config, logger, inferenceProxy });
 
   // Stable registration state — populated on first onRegistered and reused in onTokenUpdate.
   let registrationHostId = '';
   let registrationRouterPublicKey = '';
 
-  // 5. Router client — callbacks link the two components.
+  // 6. Router client — callbacks link the two components.
   const routerClient = createRouterClient({
     config,
     logger,
+    modelName,
     onRegistered: (info) => {
       registrationHostId = info.hostId;
       registrationRouterPublicKey = info.routerPublicKey;
@@ -73,11 +81,11 @@ async function main(): Promise<void> {
     },
   });
 
-  // 6. Start session manager (binds port; resolves once listening).
+  // 7. Start session manager (binds port; resolves once listening).
   await sessionManager.start(routerClient.getTlsCert(), routerClient.getTlsKey());
   logger.info({ port: config.SHAREGRID_LISTEN_PORT }, 'session manager started');
 
-  // 7. Register SIGTERM/SIGINT before connecting to the router.
+  // 8. Register SIGTERM/SIGINT before connecting to the router.
   const DRAIN_TIMEOUT_MS = 10_000;
   let shuttingDown = false;
 
@@ -101,7 +109,7 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
-  // 8. Start router client — resolves after first successful registration.
+  // 9. Start router client — resolves after first successful registration.
   await routerClient.start();
   logger.info('router registration complete — host is ready');
 }

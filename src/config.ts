@@ -15,8 +15,8 @@ const ConfigSchema = z.object({
     .min(1, 'must be >= 1')
     .max(65535, 'must be <= 65535'),
   SHAREGRID_HEARTBEAT_INTERVAL: z.coerce.number().int().positive().default(30),
-  SHAREGRID_MODEL_NAME: z.string().min(1, 'must not be empty'),
-  SHAREGRID_MODEL_CONTEXT_SIZE: z.coerce.number().int().positive(),
+  SHAREGRID_MODEL_FILE: z.string().min(1, 'must not be empty'),
+  SHAREGRID_MODEL_PATH: z.string().min(1, 'must not be empty'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
