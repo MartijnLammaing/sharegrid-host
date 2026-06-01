@@ -79,12 +79,13 @@ const config = {
   SHAREGRID_ROUTER_URL: 'https://x:1?fp=sha256:' + 'a'.repeat(64),
   SHAREGRID_LISTEN_PORT: 9000,
   SHAREGRID_HEARTBEAT_INTERVAL: 30,
-  SHAREGRID_MODEL_NAME: 'test-model',
-  SHAREGRID_MODEL_CONTEXT_SIZE: 4096,
+  SHAREGRID_MODEL_FILE: 'test-model.gguf',
+  SHAREGRID_MODEL_PATH: '/data/model.gguf',
 };
 
 const mockInferenceProxy = {
   sendPrompt: vi.fn().mockResolvedValue(undefined),
+  cancelPrompt: vi.fn(),
   flushSlot: vi.fn().mockResolvedValue(true),
 };
 
@@ -304,6 +305,164 @@ describe('SessionManager — slot behaviour', () => {
     await tick();
 
     expect(sock2.lastMessage()['type']).toBe('session_ack');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8-4: Prompt cancellation
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('SessionManager — prompt cancellation', () => {
+  const { privateKey, publicKeyPem } = makeKeyPair();
+  const hostId = 'host-cancel-test';
+
+  function makeValidState(): TokenState {
+    const token = makeToken(hostId, privateKey);
+    return {
+      hostId,
+      routerPublicKey: publicKeyPem,
+      currentToken: token,
+      previousToken: null,
+      previousTokenExpiresAt: 0,
+    };
+  }
+
+  beforeEach(() => {
+    capturedConnectionCallback = null;
+    vi.clearAllMocks();
+    mockInferenceProxy.flushSlot.mockResolvedValue(true);
+    // sendPrompt blocks until cancelled by default in these tests.
+    mockInferenceProxy.sendPrompt.mockReturnValue(new Promise(() => { /* never resolves */ }));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function startManager(): Promise<ReturnType<typeof createSessionManager>> {
+    const sm = makeManager();
+    await sm.start('cert', 'key');
+    sm.updateTokens(makeValidState());
+    sm.setRegistered(true);
+    return sm;
+  }
+
+  async function tick(ms = 20) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  it('prompt_cancel while prompt in flight calls cancelPrompt and sends prompt_cancelled', async () => {
+    const sm = await startManager();
+    const state = makeValidState();
+    sm.updateTokens(state);
+
+    const sock = new MockTLSSocket();
+    capturedConnectionCallback!(sock);
+    sock.inject({ v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: state.currentToken });
+    await tick();
+    expect(sock.lastMessage()['type']).toBe('session_ack');
+
+    // Send a prompt (sendPrompt never resolves — simulates in-flight generation).
+    sock.inject({ v: PROTOCOL_VERSION, type: 'prompt', messages: [{ role: 'user', content: 'hi' }] });
+    await tick();
+
+    // Send prompt_cancel.
+    sock.inject({ v: PROTOCOL_VERSION, type: 'prompt_cancel' });
+    await tick();
+
+    expect(mockInferenceProxy.cancelPrompt).toHaveBeenCalledOnce();
+    expect(sock.lastMessage()['type']).toBe('prompt_cancelled');
+  });
+
+  it('prompt_cancel with no prompt in flight still sends prompt_cancelled (idempotent)', async () => {
+    const sm = await startManager();
+    const state = makeValidState();
+    sm.updateTokens(state);
+
+    const sock = new MockTLSSocket();
+    capturedConnectionCallback!(sock);
+    sock.inject({ v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: state.currentToken });
+    await tick();
+    expect(sock.lastMessage()['type']).toBe('session_ack');
+
+    // No prompt sent — send cancel immediately.
+    sock.inject({ v: PROTOCOL_VERSION, type: 'prompt_cancel' });
+    await tick();
+
+    expect(mockInferenceProxy.cancelPrompt).not.toHaveBeenCalled();
+    expect(sock.lastMessage()['type']).toBe('prompt_cancelled');
+  });
+
+  it('session remains open after cancel and accepts a subsequent prompt', async () => {
+    let sendPromptResolve: (() => void) | undefined;
+    mockInferenceProxy.sendPrompt.mockImplementation(
+      (_messages: unknown, _onChunk: unknown, onEnd: () => void) =>
+        new Promise<void>((resolve) => {
+          sendPromptResolve = () => { onEnd(); resolve(); };
+        }),
+    );
+    mockInferenceProxy.cancelPrompt.mockImplementation(() => {
+      // Simulate proxy resolving the sendPrompt silently on cancel.
+      sendPromptResolve?.();
+    });
+
+    const sm = await startManager();
+    const state = makeValidState();
+    sm.updateTokens(state);
+
+    const sock = new MockTLSSocket();
+    capturedConnectionCallback!(sock);
+    sock.inject({ v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: state.currentToken });
+    await tick();
+
+    // First prompt → cancel it.
+    sock.inject({ v: PROTOCOL_VERSION, type: 'prompt', messages: [{ role: 'user', content: 'first' }] });
+    await tick();
+    sock.inject({ v: PROTOCOL_VERSION, type: 'prompt_cancel' });
+    await tick(50);
+
+    expect(sock.lastMessage()['type']).toBe('prompt_cancelled');
+
+    // Second prompt after cancel — should be accepted normally.
+    mockInferenceProxy.sendPrompt.mockImplementation(
+      (_messages: unknown, _onChunk: unknown, onEnd: () => void) => {
+        onEnd();
+        return Promise.resolve();
+      },
+    );
+    sock.inject({ v: PROTOCOL_VERSION, type: 'prompt', messages: [{ role: 'user', content: 'second' }] });
+    await tick(50);
+
+    const messages = sock.written.map((w) => JSON.parse(w.trim()) as Record<string, unknown>);
+    expect(messages.some((m) => m['type'] === 'response_end')).toBe(true);
+  });
+
+  it('idle timer is not reset by prompt_cancel', async () => {
+    vi.useFakeTimers();
+    const sm = makeManager();
+    await sm.start('cert', 'key');
+    const state = makeValidState();
+    sm.updateTokens(state);
+    sm.setRegistered(true);
+
+    const sock = new MockTLSSocket();
+    capturedConnectionCallback!(sock);
+    sock.inject({ v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: state.currentToken });
+    await vi.advanceTimersByTimeAsync(10);
+
+    const IDLE_MS = 30 * 60 * 1000;
+    // Advance to just before idle timeout.
+    await vi.advanceTimersByTimeAsync(IDLE_MS - 5_000);
+
+    // Cancel (no prompt in flight) — should NOT reset the idle timer.
+    sock.inject({ v: PROTOCOL_VERSION, type: 'prompt_cancel' });
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Advance past the original idle timeout window.
+    await vi.advanceTimersByTimeAsync(5_001);
+
+    const messages = sock.written.map((w) => JSON.parse(w.trim()) as Record<string, unknown>);
+    expect(messages.some((m) => m['type'] === 'session_timeout')).toBe(true);
+    vi.useRealTimers();
   });
 });
 

@@ -21,6 +21,8 @@ import {
   type SessionAck,
   type SessionReject,
   type PromptPayload,
+  type PromptCancel,
+  type PromptCancelled,
   type ResponseChunk,
   type ResponseEnd,
   type SessionClose,
@@ -263,6 +265,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         case 'prompt':
           await handlePrompt(msg);
           break;
+        case 'prompt_cancel':
+          handlePromptCancel(msg);
+          break;
         case 'session_close':
           await handleSessionClose();
           break;
@@ -333,6 +338,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           promptInFlight = false;
         },
       );
+    }
+
+    function handlePromptCancel(_msg: PromptCancel): void {
+      if (!sessionOpen) return;
+
+      if (promptInFlight) {
+        inferenceProxy.cancelPrompt();
+        promptInFlight = false;
+      }
+
+      const reply: PromptCancelled = { v: PROTOCOL_VERSION, type: 'prompt_cancelled' };
+      writeMessage(sock, reply);
+      log.info('prompt cancelled by user');
     }
 
     async function handleSessionClose(_msg?: SessionClose): Promise<void> {

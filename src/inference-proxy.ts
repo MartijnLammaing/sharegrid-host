@@ -38,6 +38,11 @@ export interface InferenceProxy {
     onChunk: (content: string) => void,
     onEnd: () => void,
   ): Promise<void>;
+  /**
+   * Abort the in-flight llama.cpp request. No-op if no request is in flight.
+   * The sendPrompt promise resolves silently; onEnd is NOT called.
+   */
+  cancelPrompt(): void;
   /** Returns true on HTTP 2xx, false on any error or non-2xx status. */
   flushSlot(): Promise<boolean>;
 }
@@ -57,6 +62,11 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
   const { logger, llamaSocketPath = LLAMA_SOCKET_PATH } = deps;
   const log = logger.child({ component: 'inference-proxy' });
 
+  // ── In-flight request tracking (for cancelPrompt) ─────────────────────────
+
+  let inflightReq: ReturnType<typeof httpRequest> | null = null;
+  let cancelled = false;
+
   // ── sendPrompt ────────────────────────────────────────────────────────────
 
   async function sendPrompt(
@@ -70,8 +80,10 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
       repeat_penalty: 1.1,
     });
 
+    cancelled = false;
+
     return new Promise<void>((resolve) => {
-      const req = httpRequest(
+      inflightReq = httpRequest(
         {
           socketPath: llamaSocketPath,
           path: '/v1/chat/completions',
@@ -86,6 +98,7 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
 
           res.setEncoding('utf8');
           res.on('data', (chunk: string) => {
+            if (cancelled) return;
             sseBuffer += chunk;
             // SSE lines are separated by double newline.
             let boundary: number;
@@ -97,6 +110,7 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
                 if (!trimmed.startsWith('data:')) continue;
                 const data = trimmed.slice(5).trim();
                 if (data === '[DONE]') {
+                  inflightReq = null;
                   onEnd();
                   resolve();
                   return;
@@ -120,12 +134,16 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
           });
 
           res.on('end', () => {
+            inflightReq = null;
+            if (cancelled) { resolve(); return; }
             // Stream ended without a [DONE] marker — treat as completion.
             onEnd();
             resolve();
           });
 
           res.on('error', (err) => {
+            inflightReq = null;
+            if (cancelled) { resolve(); return; }
             log.error({ err }, 'llama.cpp response stream error; treating as completion');
             onEnd();
             resolve();
@@ -133,15 +151,27 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
         },
       );
 
-      req.on('error', (err) => {
+      inflightReq.on('error', (err) => {
+        inflightReq = null;
+        if (cancelled) { resolve(); return; }
         log.error({ err }, 'llama.cpp request error; treating as completion');
         onEnd();
         resolve();
       });
 
-      req.write(body);
-      req.end();
+      inflightReq.write(body);
+      inflightReq.end();
     });
+  }
+
+  // ── cancelPrompt ──────────────────────────────────────────────────────────
+
+  function cancelPrompt(): void {
+    if (inflightReq !== null) {
+      cancelled = true;
+      inflightReq.destroy();
+      inflightReq = null;
+    }
   }
 
   // ── flushSlot ─────────────────────────────────────────────────────────────
@@ -189,5 +219,5 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
     });
   }
 
-  return { sendPrompt, flushSlot };
+  return { sendPrompt, cancelPrompt, flushSlot };
 }
