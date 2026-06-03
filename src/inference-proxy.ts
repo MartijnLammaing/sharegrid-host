@@ -11,6 +11,7 @@
  * Responsibilities:
  *  - POST the raw OpenAI request body to /v1/chat/completions (streaming SSE).
  *  - Emit each raw SSE line to the caller via onChunk.
+ *  - On abort: destroy the in-flight request and flush the llama.cpp KV cache.
  *  - Flush the llama.cpp KV cache via DELETE /slots/0 on teardown.
  *
  * See: docs/architecture_llmhost.md §2.3
@@ -39,10 +40,12 @@ export interface InferenceProxy {
    * POST the raw OpenAI `body` to llama.cpp and stream raw SSE lines back.
    *
    * Each SSE line (e.g. `"data: {...}"` or `"data: [DONE]"`) is emitted via
-   * `onChunk`. Resolves when `data: [DONE]` is received or the request is
-   * aborted via `signal`. On abort, calls `flushSlot()` before returning.
+   * `onChunk`. Resolves when `data: [DONE]` is received, the response stream
+   * ends, or `signal` is aborted. On abort, calls `flushSlot()` before
+   * returning so the KV cache is cleared even though the session manager does
+   * not get a chance to call it.
    *
-   * Implemented in Phase 2 host task 1-1.
+   * Never rejects — all errors are logged and the promise resolves.
    */
   forwardInference(
     body: string,
@@ -72,11 +75,101 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
   // ── forwardInference ──────────────────────────────────────────────────────
 
   async function forwardInference(
-    _body: string,
-    _onChunk: (sseLine: string) => void,
-    _signal: AbortSignal,
+    body: string,
+    onChunk: (sseLine: string) => void,
+    signal: AbortSignal,
   ): Promise<void> {
-    throw new Error('not implemented');
+    return new Promise<void>((resolve) => {
+      let settled = false;
+
+      const finish = (): void => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+
+      // ── Abort handling ──────────────────────────────────────────────────
+
+      const onAbort = (): void => {
+        req.destroy();
+        // flushSlot so the KV cache is cleared even though the Session Manager
+        // won't call it (the socket close interrupts normal teardown flow).
+        void flushSlot().then(finish);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+
+      const cleanup = (): void => {
+        signal.removeEventListener('abort', onAbort);
+      };
+
+      // ── HTTP request ────────────────────────────────────────────────────
+
+      const req = httpRequest(
+        {
+          socketPath: llamaSocketPath,
+          path: '/v1/chat/completions',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+          },
+        },
+        (res) => {
+          let buf = '';
+
+          res.setEncoding('utf8');
+
+          res.on('data', (chunk: string) => {
+            if (signal.aborted) return;
+
+            buf += chunk;
+
+            // Split on newlines; emit each non-empty, non-blank line.
+            let nl: number;
+            while ((nl = buf.indexOf('\n')) !== -1) {
+              const line = buf.slice(0, nl).trimEnd();
+              buf = buf.slice(nl + 1);
+
+              if (line.length === 0) continue; // skip blank SSE separators
+
+              onChunk(line);
+
+              if (line === 'data: [DONE]') {
+                cleanup();
+                res.destroy();
+                finish();
+                return;
+              }
+            }
+          });
+
+          res.on('end', () => {
+            cleanup();
+            finish();
+          });
+
+          res.on('error', (err) => {
+            cleanup();
+            if (!signal.aborted) {
+              log.error({ err }, 'llama.cpp response stream error');
+            }
+            finish();
+          });
+        },
+      );
+
+      req.on('error', (err) => {
+        cleanup();
+        if (!signal.aborted) {
+          log.error({ err }, 'llama.cpp request error');
+        }
+        finish();
+      });
+
+      req.write(body);
+      req.end();
+    });
   }
 
   // ── flushSlot ─────────────────────────────────────────────────────────────
