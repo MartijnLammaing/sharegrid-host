@@ -312,6 +312,30 @@ export async function startHost(mockRouter: MockRouter, llamaSocketPath?: string
   };
 }
 
+// ── Inference request helper ──────────────────────────────────────────────────
+
+/**
+ * Send an inference_request and collect all inference_response_chunk messages
+ * until the `data: [DONE]` SSE line is received. Returns every raw SSE line
+ * (including the [DONE] line) in arrival order.
+ */
+export async function sendInferenceRequest(
+  sock: TLSSocket,
+  reader: ReturnType<typeof createReader>,
+  body: string,
+): Promise<string[]> {
+  sendMsg(sock, { v: PROTOCOL_VERSION, type: 'inference_request', body });
+  const lines: string[] = [];
+  while (true) {
+    const msg = await reader.read();
+    if (msg['type'] !== 'inference_response_chunk') break;
+    const data = msg['data'] as string;
+    lines.push(data);
+    if (data === 'data: [DONE]') break;
+  }
+  return lines;
+}
+
 // ── User TLS client ───────────────────────────────────────────────────────────
 
 export function connectUser(port: number, fingerprint: string): Promise<TLSSocket> {

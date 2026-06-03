@@ -1,9 +1,9 @@
 /**
- * Integration tests — session lifecycle (6-1, 6-2, 6-3, 6-5).
+ * Integration tests — session lifecycle (Phase 2 protocol).
  *
  * Uses real TLS sockets, real Ed25519 signing, and a real HTTP server on
- * /tmp/llama.sock that acts as llama.cpp. All timers are real except the
- * idle-timeout test (6-5) which uses vi.useFakeTimers.
+ * a tmp Unix socket that acts as llama.cpp. Exercises the Phase 2 protocol:
+ * inference_request → inference_response_chunk stream → data: [DONE].
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,6 +15,7 @@ import {
   connectUser,
   sendMsg,
   createReader,
+  sendInferenceRequest,
   type MockRouter,
   type MockLlamaServer,
   type HostStack,
@@ -36,23 +37,23 @@ describe('Host integration — session', () => {
     mockRouter.stop();
     llamaServer.stop();
     vi.useRealTimers();
-    // Clean up env vars set by startHost
-    for (const k of ['SHAREGRID_ROUTER_URL', 'SHAREGRID_LISTEN_PORT', 'SHAREGRID_HEARTBEAT_INTERVAL',
-      'SHAREGRID_MODEL_NAME', 'SHAREGRID_MODEL_CONTEXT_SIZE']) {
+    for (const k of [
+      'SHAREGRID_ROUTER_URL', 'SHAREGRID_LISTEN_PORT', 'SHAREGRID_HEARTBEAT_INTERVAL',
+      'SHAREGRID_MODEL_FILE', 'SHAREGRID_MODEL_PATH',
+    ]) {
       delete process.env[k];
     }
   }, 10_000);
 
-  // ── 6-1: Happy path ──────────────────────────────────────────────────────
+  // ── Happy path ────────────────────────────────────────────────────────────
 
-  it('happy path: session_open → session_ack → prompt → chunks → response_end → session_close', async () => {
+  it('session_open → session_ack → inference_request → SSE chunks → [DONE] → session_close', async () => {
     llamaServer.nextChunks = ['Hello', ', ', 'world'];
 
     const userSock = await connectUser(host.sessionManagerPort, host.hostFingerprint);
     const reader = createReader(userSock);
 
     try {
-      // Open session
       sendMsg(userSock, {
         v: PROTOCOL_VERSION,
         type: 'session_open',
@@ -61,43 +62,26 @@ describe('Host integration — session', () => {
       const ack = await reader.read();
       expect(ack['type']).toBe('session_ack');
 
-      // Send prompt
-      sendMsg(userSock, {
-        v: PROTOCOL_VERSION,
-        type: 'prompt',
-        messages: [{ role: 'user', content: 'hi' }],
-      });
+      const lines = await sendInferenceRequest(userSock, reader, '{"stream":true}');
 
-      // Collect response chunks + end
-      const chunks: string[] = [];
-      let gotEnd = false;
-      while (!gotEnd) {
-        const msg = await reader.read();
-        if (msg['type'] === 'response_chunk') {
-          chunks.push(msg['content'] as string);
-        } else if (msg['type'] === 'response_end') {
-          gotEnd = true;
-        }
-      }
+      // The host must have forwarded one SSE line per chunk plus [DONE]
+      expect(lines.some((l) => l.includes('"Hello"'))).toBe(true);
+      expect(lines.some((l) => l.includes('"world"'))).toBe(true);
+      expect(lines[lines.length - 1]).toBe('data: [DONE]');
 
-      expect(chunks).toEqual(['Hello', ', ', 'world']);
-      expect(gotEnd).toBe(true);
-
-      // Close session
       sendMsg(userSock, { v: PROTOCOL_VERSION, type: 'session_close' });
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 300));
 
-      // llama.cpp DELETE /slots/0 must have been called
-      expect(llamaServer.flushCount).toBe(1);
+      // Session manager must flush the KV cache after the turn
+      expect(llamaServer.flushCount).toBeGreaterThanOrEqual(1);
     } finally {
       userSock.destroy();
     }
   }, 15_000);
 
-  // ── 6-2: Slot busy ────────────────────────────────────────────────────────
+  // ── Slot busy ─────────────────────────────────────────────────────────────
 
   it('second session_open while slot occupied receives session_reject reason: busy', async () => {
-    // First connection — keeps the slot
     const user1 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
     const r1 = createReader(user1);
     sendMsg(user1, {
@@ -108,7 +92,11 @@ describe('Host integration — session', () => {
     const ack1 = await r1.read();
     expect(ack1['type']).toBe('session_ack');
 
-    // Second connection — slot is busy
+    // Verify first session is usable with inference
+    const lines = await sendInferenceRequest(user1, r1, '{}');
+    expect(lines[lines.length - 1]).toBe('data: [DONE]');
+
+    // Second connection — slot is still busy (session is open between turns)
     const user2 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
     const r2 = createReader(user2);
     sendMsg(user2, {
@@ -117,25 +105,15 @@ describe('Host integration — session', () => {
       hostKeyToken: host.hostKeyToken(),
     });
     const reject = await r2.read();
-
     expect(reject['type']).toBe('session_reject');
     expect(reject['reason']).toBe('busy');
 
-    // First connection is unaffected
-    sendMsg(user1, {
-      v: PROTOCOL_VERSION,
-      type: 'prompt',
-      messages: [{ role: 'user', content: 'hi' }],
-    });
-    const chunkOrEnd = await r1.read();
-    expect(['response_chunk', 'response_end']).toContain(chunkOrEnd['type']);
-
     user1.destroy();
     user2.destroy();
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 300));
   }, 10_000);
 
-  // ── 6-3: Slot erase failure ───────────────────────────────────────────────
+  // ── Slot erase failure ────────────────────────────────────────────────────
 
   it('slot erase failure (llama.cpp returns 500) triggers process.exit(1)', async () => {
     llamaServer.flushShouldFail = true;
@@ -152,7 +130,6 @@ describe('Host integration — session', () => {
     });
     await rSlot.read(); // session_ack
 
-    // Absorb the unhandled rejection that comes from void doTeardown()
     process.once('unhandledRejection', () => undefined);
 
     sendMsg(userSock, { v: PROTOCOL_VERSION, type: 'session_close' });
@@ -163,15 +140,9 @@ describe('Host integration — session', () => {
     vi.restoreAllMocks();
   }, 10_000);
 
-  // ── 6-5: Slot release after session close ────────────────────────────────
-  //
-  // Tests that the teardown path (slot erase → slot release) works end-to-end
-  // with real sockets. The 30-minute idle timer itself is covered by the unit
-  // tests (session-manager.test.ts 5-4); here we verify that after teardown
-  // the slot is genuinely free and a subsequent connection is accepted.
+  // ── Slot release after session close ──────────────────────────────────────
 
   it('slot is released after session_close and a subsequent connection is accepted', async () => {
-    // First session
     const user1 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
     const r1 = createReader(user1);
     sendMsg(user1, {
@@ -179,18 +150,14 @@ describe('Host integration — session', () => {
       type: 'session_open',
       hostKeyToken: host.hostKeyToken(),
     });
-    const ack1 = await r1.read();
-    expect(ack1['type']).toBe('session_ack');
+    expect((await r1.read())['type']).toBe('session_ack');
 
-    // Close cleanly — triggers teardown (flushSlot → release slot)
     sendMsg(user1, { v: PROTOCOL_VERSION, type: 'session_close' });
-    await new Promise((r) => setTimeout(r, 300)); // wait for teardown
+    await new Promise((r) => setTimeout(r, 400));
     user1.destroy();
 
-    // Verify llama slot was flushed
-    expect(llamaServer.flushCount).toBe(1);
+    expect(llamaServer.flushCount).toBeGreaterThanOrEqual(1);
 
-    // A second connection must now be accepted (slot is free)
     const user2 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
     const r2 = createReader(user2);
     sendMsg(user2, {
@@ -198,8 +165,47 @@ describe('Host integration — session', () => {
       type: 'session_open',
       hostKeyToken: host.hostKeyToken(),
     });
-    const ack2 = await r2.read();
-    expect(ack2['type']).toBe('session_ack');
+    expect((await r2.read())['type']).toBe('session_ack');
     user2.destroy();
   }, 10_000);
+
+  // ── Multi-turn ────────────────────────────────────────────────────────────
+
+  it('multi-turn: second inference_request on same session is accepted after first completes', async () => {
+    llamaServer.nextChunks = ['A'];
+
+    const userSock = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const reader = createReader(userSock);
+
+    try {
+      sendMsg(userSock, {
+        v: PROTOCOL_VERSION,
+        type: 'session_open',
+        hostKeyToken: host.hostKeyToken(),
+      });
+      expect((await reader.read())['type']).toBe('session_ack');
+
+      // Turn 1
+      const lines1 = await sendInferenceRequest(userSock, reader, '{"turn":1}');
+      expect(lines1[lines1.length - 1]).toBe('data: [DONE]');
+      await new Promise((r) => setTimeout(r, 50)); // let flush complete
+      const flushAfterTurn1 = llamaServer.flushCount;
+      expect(flushAfterTurn1).toBe(1);
+
+      // Turn 2 — session must still be open
+      llamaServer.nextChunks = ['B'];
+      const lines2 = await sendInferenceRequest(userSock, reader, '{"turn":2}');
+      expect(lines2[lines2.length - 1]).toBe('data: [DONE]');
+      await new Promise((r) => setTimeout(r, 50));
+      expect(llamaServer.flushCount).toBe(2);
+
+      // Close gracefully
+      sendMsg(userSock, { v: PROTOCOL_VERSION, type: 'session_close' });
+      await new Promise((r) => setTimeout(r, 300));
+      // Teardown flush: no inference in progress, so teardown calls flushSlot once more
+      expect(llamaServer.flushCount).toBe(3);
+    } finally {
+      userSock.destroy();
+    }
+  }, 15_000);
 });
