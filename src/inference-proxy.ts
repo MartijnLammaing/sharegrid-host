@@ -1,22 +1,24 @@
 /**
- * Inference Proxy — thin forwarding layer between Session Manager and llama.cpp.
+ * Inference Proxy — raw forwarding layer between Session Manager and llama.cpp.
+ *
+ * Phase 2: forwards the full OpenAI request body verbatim to llama.cpp and
+ * streams raw SSE lines back. No content parsing; no text extraction.
  *
  * Communicates with llama.cpp via Node.js built-in `http.request` over an
  * internal Unix socket at `/tmp/llama.sock`. The path is fixed inside the
  * container and is not configurable at runtime.
  *
  * Responsibilities:
- *  - Forward prompts via POST /v1/chat/completions (streaming SSE).
- *  - Parse SSE stream and call onChunk / onEnd callbacks.
+ *  - POST the raw OpenAI request body to /v1/chat/completions (streaming SSE).
+ *  - Emit each raw SSE line to the caller via onChunk.
  *  - Flush the llama.cpp KV cache via DELETE /slots/0 on teardown.
  *
  * See: docs/architecture_llmhost.md §2.3
- *      docs/implementation_plan_llmhost.md Phase 3C
+ *      docs/implementation_plan_llmhost.md Phase 1
  */
 
 import { request as httpRequest } from 'node:http';
 import type { Logger } from 'pino';
-import type { ChatMessage } from '@sharegrid/shared/protocol';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -33,16 +35,21 @@ export interface InferenceProxyDeps {
 }
 
 export interface InferenceProxy {
-  sendPrompt(
-    messages: ChatMessage[],
-    onChunk: (content: string) => void,
-    onEnd: () => void,
-  ): Promise<void>;
   /**
-   * Abort the in-flight llama.cpp request. No-op if no request is in flight.
-   * The sendPrompt promise resolves silently; onEnd is NOT called.
+   * POST the raw OpenAI `body` to llama.cpp and stream raw SSE lines back.
+   *
+   * Each SSE line (e.g. `"data: {...}"` or `"data: [DONE]"`) is emitted via
+   * `onChunk`. Resolves when `data: [DONE]` is received or the request is
+   * aborted via `signal`. On abort, calls `flushSlot()` before returning.
+   *
+   * Implemented in Phase 2 host task 1-1.
    */
-  cancelPrompt(): void;
+  forwardInference(
+    body: string,
+    onChunk: (sseLine: string) => void,
+    signal: AbortSignal,
+  ): Promise<void>;
+
   /** Returns true on HTTP 2xx, false on any error or non-2xx status. */
   flushSlot(): Promise<boolean>;
 }
@@ -62,118 +69,14 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
   const { logger, llamaSocketPath = LLAMA_SOCKET_PATH } = deps;
   const log = logger.child({ component: 'inference-proxy' });
 
-  // ── In-flight request tracking (for cancelPrompt) ─────────────────────────
+  // ── forwardInference ──────────────────────────────────────────────────────
 
-  let inflightReq: ReturnType<typeof httpRequest> | null = null;
-  let cancelled = false;
-
-  // ── sendPrompt ────────────────────────────────────────────────────────────
-
-  async function sendPrompt(
-    messages: ChatMessage[],
-    onChunk: (content: string) => void,
-    onEnd: () => void,
+  async function forwardInference(
+    _body: string,
+    _onChunk: (sseLine: string) => void,
+    _signal: AbortSignal,
   ): Promise<void> {
-    const body = JSON.stringify({
-      messages,
-      stream: true,
-      temperature: 0.7,
-      repeat_penalty: 1.15,
-      frequency_penalty: 0.3,
-    });
-
-    cancelled = false;
-
-    return new Promise<void>((resolve) => {
-      inflightReq = httpRequest(
-        {
-          socketPath: llamaSocketPath,
-          path: '/v1/chat/completions',
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(body),
-          },
-        },
-        (res) => {
-          let sseBuffer = '';
-
-          res.setEncoding('utf8');
-          res.on('data', (chunk: string) => {
-            if (cancelled) return;
-            sseBuffer += chunk;
-            // SSE lines are separated by double newline.
-            let boundary: number;
-            while ((boundary = sseBuffer.indexOf('\n\n')) !== -1) {
-              const block = sseBuffer.slice(0, boundary);
-              sseBuffer = sseBuffer.slice(boundary + 2);
-              for (const line of block.split('\n')) {
-                const trimmed = line.trim();
-                if (!trimmed.startsWith('data:')) continue;
-                const data = trimmed.slice(5).trim();
-                if (data === '[DONE]') {
-                  inflightReq = null;
-                  onEnd();
-                  resolve();
-                  return;
-                }
-                try {
-                  const parsed = JSON.parse(data) as Record<string, unknown>;
-                  const choices = parsed['choices'];
-                  if (!Array.isArray(choices) || choices.length === 0) continue;
-                  const delta = (choices[0] as Record<string, unknown>)['delta'];
-                  if (typeof delta !== 'object' || delta === null) continue;
-                  const content = (delta as Record<string, unknown>)['content'];
-                  if (typeof content === 'string' && content.length > 0) {
-                    onChunk(content);
-                  }
-                } catch {
-                  // Malformed SSE JSON — log and continue.
-                  log.debug({ data }, 'failed to parse SSE chunk');
-                }
-              }
-            }
-          });
-
-          res.on('end', () => {
-            inflightReq = null;
-            if (cancelled) { resolve(); return; }
-            // Stream ended without a [DONE] marker — treat as completion.
-            onEnd();
-            resolve();
-          });
-
-          res.on('error', (err) => {
-            inflightReq = null;
-            if (cancelled) { resolve(); return; }
-            log.error({ err }, 'llama.cpp response stream error; treating as completion');
-            onEnd();
-            resolve();
-          });
-        },
-      );
-
-      inflightReq.on('error', (err) => {
-        inflightReq = null;
-        if (cancelled) { resolve(); return; }
-        log.error({ err }, 'llama.cpp request error; treating as completion');
-        onEnd();
-        resolve();
-      });
-
-      inflightReq.write(body);
-      inflightReq.end();
-    });
-  }
-
-  // ── cancelPrompt ──────────────────────────────────────────────────────────
-
-  function cancelPrompt(): void {
-    if (inflightReq !== null) {
-      cancelled = true;
-      inflightReq.destroy();
-      inflightReq = null;
-    }
+    throw new Error('not implemented');
   }
 
   // ── flushSlot ─────────────────────────────────────────────────────────────
@@ -221,5 +124,5 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
     });
   }
 
-  return { sendPrompt, cancelPrompt, flushSlot };
+  return { forwardInference, flushSlot };
 }

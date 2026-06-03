@@ -1,16 +1,23 @@
 /**
  * Session Manager — the TLS listener for direct LLMUser connections.
  *
- * Responsibilities (Phase 1):
+ * Responsibilities (Phase 2):
  *  - Hold a binary session slot (one session at a time).
  *  - Accept TLS connections; reject until registered.
  *  - Validate the host key token presented by the LLMUser.
  *  - Enforce 30-minute idle timeout.
+ *  - Run the inference loop: accept inference_request messages, forward to
+ *    InferenceProxy, stream inference_response_chunk messages back.
  *  - Coordinate session teardown: flush llama.cpp slot, release lock.
  *  - Exit the process on slot-erase failure.
  *
+ * The full Phase 2 inference loop (inference_request handling) is implemented
+ * in host Phase 2 of the implementation plan. This file currently contains
+ * the Phase 0 stub — the session open/close/teardown skeleton is complete;
+ * the inference dispatch calls forwardInference (not yet implemented).
+ *
  * See: docs/architecture_llmhost.md §2.2, §4, §5.2
- *      docs/implementation_plan_llmhost.md Phase 3B
+ *      docs/implementation_plan_llmhost.md Phase 2
  */
 
 import { createServer as createTlsServer, type TLSSocket, type Server as TLSServer } from 'node:tls';
@@ -20,11 +27,7 @@ import {
   type SessionOpenPayload,
   type SessionAck,
   type SessionReject,
-  type PromptPayload,
-  type PromptCancel,
-  type PromptCancelled,
-  type ResponseChunk,
-  type ResponseEnd,
+  type InferenceRequestPayload,
   type SessionClose,
   type SessionTimeout,
   type HostIncomingMessage,
@@ -262,11 +265,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         case 'session_open':
           handleSessionOpen(msg);
           break;
-        case 'prompt':
-          await handlePrompt(msg);
-          break;
-        case 'prompt_cancel':
-          handlePromptCancel(msg);
+        case 'inference_request':
+          await handleInferenceRequest(msg);
           break;
         case 'session_close':
           await handleSessionClose();
@@ -313,44 +313,18 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       log.info('session accepted');
     }
 
-    async function handlePrompt(msg: PromptPayload): Promise<void> {
+    // Full Phase 2 inference loop implemented in host Phase 2 (implementation plan).
+    async function handleInferenceRequest(_msg: InferenceRequestPayload): Promise<void> {
       if (!sessionOpen) return;
-
-      if (promptInFlight) {
-        // Protocol violation: second prompt while one is in flight.
-        log.warn('prompt received while one already in flight; closing');
-        void doTeardown().then(() => sock.destroy());
-        return;
-      }
-
       resetIdleTimer();
       promptInFlight = true;
-
-      await inferenceProxy.sendPrompt(
-        msg.messages,
-        (content: string) => {
-          const chunk: ResponseChunk = { v: PROTOCOL_VERSION, type: 'response_chunk', content };
-          writeMessage(sock, chunk);
-        },
-        () => {
-          const end: ResponseEnd = { v: PROTOCOL_VERSION, type: 'response_end' };
-          writeMessage(sock, end);
-          promptInFlight = false;
-        },
+      // Phase 2 implementation: forwardInference + stream inference_response_chunk messages.
+      await inferenceProxy.forwardInference(
+        _msg.body,
+        () => { /* streaming stub — Phase 2 */ },
+        new AbortController().signal,
       );
-    }
-
-    function handlePromptCancel(_msg: PromptCancel): void {
-      if (!sessionOpen) return;
-
-      if (promptInFlight) {
-        inferenceProxy.cancelPrompt();
-        promptInFlight = false;
-      }
-
-      const reply: PromptCancelled = { v: PROTOCOL_VERSION, type: 'prompt_cancelled' };
-      writeMessage(sock, reply);
-      log.info('prompt cancelled by user');
+      promptInFlight = false;
     }
 
     async function handleSessionClose(_msg?: SessionClose): Promise<void> {
