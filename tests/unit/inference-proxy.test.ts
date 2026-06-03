@@ -3,19 +3,12 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import pino from 'pino';
 
 // ── Mock node:http ─────────────────────────────────────────────────────────────
-const mockRequest = vi.fn();
+const { mockRequest } = vi.hoisted(() => ({ mockRequest: vi.fn() }));
 vi.mock('node:http', () => ({ request: mockRequest }));
 
-const { createInferenceProxy } = await import('../../src/inference-proxy.js');
+import { createInferenceProxy } from '../../src/inference-proxy.js';
 
 const logger = pino({ level: 'silent' });
-const config = {
-  SHAREGRID_ROUTER_URL: 'https://x:1?fp=sha256:' + 'a'.repeat(64),
-  SHAREGRID_LISTEN_PORT: 9000,
-  SHAREGRID_HEARTBEAT_INTERVAL: 30,
-  SHAREGRID_MODEL_NAME: 'test-model',
-  SHAREGRID_MODEL_CONTEXT_SIZE: 4096,
-};
 
 // ── Helpers for mock HTTP ──────────────────────────────────────────────────────
 
@@ -66,7 +59,7 @@ describe('InferenceProxy', () => {
         return req;
       });
 
-      const proxy = createInferenceProxy({ config, logger });
+      const proxy = createInferenceProxy({ logger });
       const onChunk = vi.fn();
       const onEnd = vi.fn();
       await proxy.sendPrompt([{ role: 'user', content: 'hello' }], onChunk, onEnd);
@@ -78,7 +71,6 @@ describe('InferenceProxy', () => {
 
       const body = JSON.parse(capturedBody) as Record<string, unknown>;
       expect(body['stream']).toBe(true);
-      expect(body['model']).toBe('test-model');
       expect(body['messages']).toEqual([{ role: 'user', content: 'hello' }]);
     });
 
@@ -97,7 +89,7 @@ describe('InferenceProxy', () => {
         return req;
       });
 
-      const proxy = createInferenceProxy({ config, logger });
+      const proxy = createInferenceProxy({ logger });
       const chunks: string[] = [];
       await proxy.sendPrompt([], (c) => chunks.push(c), vi.fn());
 
@@ -115,7 +107,7 @@ describe('InferenceProxy', () => {
         return req;
       });
 
-      const proxy = createInferenceProxy({ config, logger });
+      const proxy = createInferenceProxy({ logger });
       const onEnd = vi.fn();
       await proxy.sendPrompt([], vi.fn(), onEnd);
       expect(onEnd).toHaveBeenCalledOnce();
@@ -130,7 +122,7 @@ describe('InferenceProxy', () => {
         return req;
       });
 
-      const proxy = createInferenceProxy({ config, logger });
+      const proxy = createInferenceProxy({ logger });
       const onEnd = vi.fn();
       await proxy.sendPrompt([], vi.fn(), onEnd);
       expect(onEnd).toHaveBeenCalledOnce();
@@ -149,7 +141,7 @@ describe('InferenceProxy', () => {
         return req;
       });
 
-      const proxy = createInferenceProxy({ config, logger });
+      const proxy = createInferenceProxy({ logger });
       expect(await proxy.flushSlot()).toBe(true);
     });
 
@@ -166,7 +158,7 @@ describe('InferenceProxy', () => {
         return req;
       });
 
-      const proxy = createInferenceProxy({ config, logger });
+      const proxy = createInferenceProxy({ logger });
       await proxy.flushSlot();
       expect(capturedOptions!['path']).toBe('/slots/0');
       expect(capturedOptions!['method']).toBe('DELETE');
@@ -183,7 +175,7 @@ describe('InferenceProxy', () => {
         return req;
       });
 
-      const proxy = createInferenceProxy({ config, logger });
+      const proxy = createInferenceProxy({ logger });
       expect(await proxy.flushSlot()).toBe(false);
     });
 
@@ -194,7 +186,7 @@ describe('InferenceProxy', () => {
         return req;
       });
 
-      const proxy = createInferenceProxy({ config, logger });
+      const proxy = createInferenceProxy({ logger });
       expect(await proxy.flushSlot()).toBe(false);
     });
 
@@ -206,7 +198,7 @@ describe('InferenceProxy', () => {
         return new MockRequest();
       });
 
-      const proxy = createInferenceProxy({ config, logger });
+      const proxy = createInferenceProxy({ logger });
       const flushPromise = proxy.flushSlot();
 
       // Advance past the 5-second timeout inside flushSlot

@@ -24,6 +24,6 @@ docker run --cap-drop ALL \
   --ipc=none \
   --restart=on-failure \
   -p 9000:9000 \
-  -e SHAREGRID_ROUTER_URL="https://172.17.0.2:8443?fp=sha256:6059adc8a497ba0070f0f10af6ce130ae58a46c83e70c4ed98e12b5bfd01f98e" \
+  -e SHAREGRID_ROUTER_URL="https://172.17.0.2:8443?fp=sha256:6059adc8a497ba0070f0f10af6ce130ae58a46c83e70c4ed98e12b5bfd01f98e&key=<host-secret-from-router-banner>" \
   -e SHAREGRID_LISTEN_PORT=9000 \
   sharegrid-host

@@ -24,7 +24,7 @@ vi.mock('node:tls', () => ({
   ),
 }));
 
-const { createSessionManager } = await import('../../src/session-manager.js');
+import { createSessionManager } from '../../src/session-manager.js';
 
 // ── Mock TLS socket ──────────────────────────────────────────────────────────
 
@@ -37,7 +37,7 @@ class MockTLSSocket extends EventEmitter {
   write(data: string) { this.written.push(data); return true; }
   end() { this.destroyed = true; return this; }
   destroy() { this.destroyed = true; return this; }
-  removeAllListeners(event?: string) { super.removeAllListeners(event); return this; }
+  override removeAllListeners(event?: string) { super.removeAllListeners(event); return this; }
 
   inject(msg: object) { this.emit('data', JSON.stringify(msg) + '\n'); }
   close() { this.emit('close'); }

@@ -4,21 +4,21 @@ import { PROTOCOL_VERSION } from '@sharegrid/shared/protocol';
 import pino from 'pino';
 
 // ── Mock @sharegrid/shared/tls ────────────────────────────────────────────────
-const mockConnect = vi.fn();
+const { mockConnect } = vi.hoisted(() => ({ mockConnect: vi.fn() }));
 vi.mock('@sharegrid/shared/tls', async (importOriginal) => {
   const real = await importOriginal<typeof import('@sharegrid/shared/tls')>();
   return { ...real, connectWithPinnedFingerprint: mockConnect };
 });
 
-const { createRouterClient } = await import('../../src/router-client.js');
+import { createRouterClient } from '../../src/router-client.js';
 
 const logger = pino({ level: 'silent' });
 const config = {
-  SHAREGRID_ROUTER_URL: 'https://router.example.com:8443?fp=sha256:' + 'a'.repeat(64),
+  SHAREGRID_ROUTER_URL: 'https://router.example.com:8443?fp=sha256:' + 'a'.repeat(64) + '&key=testHostSecret',
   SHAREGRID_LISTEN_PORT: 9000,
   SHAREGRID_HEARTBEAT_INTERVAL: 30,
-  SHAREGRID_MODEL_NAME: 'test-model',
-  SHAREGRID_MODEL_CONTEXT_SIZE: 4096,
+  SHAREGRID_MODEL_FILE: 'test-model.gguf',
+  SHAREGRID_MODEL_PATH: '/data/test-model.gguf',
 };
 
 // ── Mock socket factory ───────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ class MockSocket extends EventEmitter {
   write(data: string) { this.written.push(data); return true; }
   end(cb?: () => void) { this.destroyed = true; cb?.(); return this; }
   destroy() { this.destroyed = true; return this; }
-  removeAllListeners(event?: string) { super.removeAllListeners(event); return this; }
+  override removeAllListeners(event?: string) { super.removeAllListeners(event); return this; }
 
   inject(msg: object) { this.emit('data', JSON.stringify(msg) + '\n'); }
 
@@ -48,7 +48,7 @@ function makeClient(overrides?: { onRegistered?: () => void; onTokenUpdate?: (u:
   const onTokenUpdate = vi.fn(overrides?.onTokenUpdate ?? (() => undefined));
   const onDisconnect = vi.fn(overrides?.onDisconnect ?? (() => undefined));
 
-  const client = createRouterClient({ config, logger, onRegistered, onTokenUpdate, onDisconnect });
+  const client = createRouterClient({ config, logger, modelName: 'test-model', onRegistered, onTokenUpdate, onDisconnect });
   return { client, onRegistered, onTokenUpdate, onDisconnect };
 }
 
@@ -99,13 +99,13 @@ describe('RouterClient (host)', () => {
     expect(payload['v']).toBe(PROTOCOL_VERSION);
     expect(payload['type']).toBe('register');
     expect(typeof payload['modelName']).toBe('string');
-    expect(typeof payload['contextSize']).toBe('number');
     expect(typeof payload['port']).toBe('number');
     expect(typeof payload['tlsFingerprint']).toBe('string');
     expect(payload['tlsFingerprint']).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(payload['roleKey']).toBe('testHostSecret');
 
     expect(onRegistered).toHaveBeenCalledOnce();
-    const regInfo = onRegistered.mock.calls[0]![0] as Record<string, unknown>;
+    const regInfo = (onRegistered.mock.calls as unknown[][])[0]![0] as Record<string, unknown>;
     expect(regInfo['hostId']).toBe('h1');
     expect(regInfo['currentToken']).toBe('tok');
     expect(regInfo['previousToken']).toBeNull();
@@ -193,6 +193,22 @@ describe('RouterClient (host)', () => {
       sequence.push(delay);
     }
     expect(sequence).toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000]);
+  });
+
+  it('RoleKeyMissingError from parseFingerprintFromUrl propagates out of start() without reconnect loop', async () => {
+    // Use a URL that lacks the key param — parseFingerprintFromUrl will throw RoleKeyMissingError
+    const badConfig = { ...config, SHAREGRID_ROUTER_URL: 'https://router.example.com:8443?fp=sha256:' + 'a'.repeat(64) };
+    const onDisconnect = vi.fn();
+    const { client } = makeClient({ onDisconnect });
+    // Temporarily swap config by creating a raw client with the bad config
+    const badClient = createRouterClient({ config: badConfig, logger, modelName: 'test-model', onRegistered: vi.fn(), onTokenUpdate: vi.fn(), onDisconnect });
+
+    await expect(badClient.start()).rejects.toThrow();
+    // onDisconnect must NOT have been called — we never connected
+    expect(onDisconnect).not.toHaveBeenCalled();
+    // connectWithPinnedFingerprint must NOT have been called — error is pre-connect
+    expect(mockConnect).not.toHaveBeenCalled();
+    void client; // suppress unused warning
   });
 
   it('invokes onDisconnect when the router socket closes unexpectedly', async () => {

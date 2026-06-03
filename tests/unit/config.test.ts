@@ -6,10 +6,10 @@ import type { MockInstance } from '@vitest/spy';
 describe('loadConfig', () => {
   const validEnv = {
     SHAREGRID_ROUTER_URL:
-      'tls://router.example.com:8443?fp=sha256:' + 'a'.repeat(64),
+      'https://router.example.com:8443?fp=sha256:' + 'a'.repeat(64) + '&key=testHostKey123',
     SHAREGRID_LISTEN_PORT: '7000',
-    SHAREGRID_MODEL_NAME: 'llama-3-8b',
-    SHAREGRID_MODEL_CONTEXT_SIZE: '4096',
+    SHAREGRID_MODEL_FILE: 'model.gguf',
+    SHAREGRID_MODEL_PATH: '/models',
   };
 
   let exitSpy: MockInstance<(code?: number) => never>;
@@ -42,8 +42,8 @@ describe('loadConfig', () => {
     expect(config.SHAREGRID_ROUTER_URL).toBe(validEnv.SHAREGRID_ROUTER_URL);
     expect(config.SHAREGRID_LISTEN_PORT).toBe(7000);
     expect(config.SHAREGRID_HEARTBEAT_INTERVAL).toBe(30);
-    expect(config.SHAREGRID_MODEL_NAME).toBe('llama-3-8b');
-    expect(config.SHAREGRID_MODEL_CONTEXT_SIZE).toBe(4096);
+    expect(config.SHAREGRID_MODEL_FILE).toBe('model.gguf');
+    expect(config.SHAREGRID_MODEL_PATH).toBe('/models');
   });
 
   it('applies provided SHAREGRID_HEARTBEAT_INTERVAL instead of default', async () => {
@@ -61,10 +61,24 @@ describe('loadConfig', () => {
 
   it('exits with code 1 when SHAREGRID_ROUTER_URL lacks fp query param', async () => {
     Object.assign(process.env, validEnv, {
-      SHAREGRID_ROUTER_URL: 'tls://router.example.com:8443',
+      SHAREGRID_ROUTER_URL: 'https://router.example.com:8443?key=testHostKey123',
     });
     await expect(load()).rejects.toThrow('process.exit called');
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('exits with code 1 when SHAREGRID_ROUTER_URL has fp but no key query param', async () => {
+    Object.assign(process.env, validEnv, {
+      SHAREGRID_ROUTER_URL: 'https://router.example.com:8443?fp=sha256:' + 'a'.repeat(64),
+    });
+    await expect(load()).rejects.toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('parses correctly when SHAREGRID_ROUTER_URL has both fp and key params', async () => {
+    Object.assign(process.env, validEnv);
+    const config = await load();
+    expect(config.SHAREGRID_ROUTER_URL).toContain('key=testHostKey123');
   });
 
   it.each(['0', '65536', 'abc', ''])(

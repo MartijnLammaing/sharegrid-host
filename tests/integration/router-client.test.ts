@@ -7,7 +7,7 @@
  * and session acceptance.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PROTOCOL_VERSION } from '@sharegrid/shared/protocol';
 import {
   startMockRouter,
@@ -16,6 +16,7 @@ import {
   connectUser,
   sendMsg,
   createReader,
+  getFreePort,
   type MockRouter,
   type MockLlamaServer,
   type HostStack,
@@ -78,4 +79,40 @@ describe('Host integration — router reconnect', () => {
     expect(reject['reason']).toBe('not_registered');
     user2.destroy();
   }, 15_000);
+
+  // ── 6-4 (Phase 9 addition): Wrong roleKey causes registration failure ─────
+
+  it('start() rejects when mock router closes connection due to wrong roleKey', async () => {
+    // Start a mock router with its own hostSecret
+    const badRouter = await startMockRouter();
+    const freePort = await getFreePort();
+
+    process.env['SHAREGRID_ROUTER_URL'] = `https://127.0.0.1:${badRouter.port}?fp=${badRouter.fingerprint}&key=completely-wrong-key`;
+    process.env['SHAREGRID_LISTEN_PORT'] = String(freePort);
+    process.env['SHAREGRID_HEARTBEAT_INTERVAL'] = '30';
+    process.env['SHAREGRID_MODEL_NAME'] = 'test-model';
+    process.env['SHAREGRID_MODEL_CONTEXT_SIZE'] = '4096';
+
+    const { loadConfig: lc } = await import('../../src/config.js');
+    const { createComponentLogger: ccl } = await import('../../src/logger.js');
+    const { createRouterClient: mkClient } = await import('../../src/router-client.js');
+
+    const cfg = lc();
+    const hostLogger = ccl('test-wrong-key');
+
+    const onDisconnect = vi.fn();
+    const client = mkClient({
+      config: cfg,
+      logger: hostLogger,
+      modelName: 'test-model',
+      onRegistered: vi.fn(),
+      onTokenUpdate: vi.fn(),
+      onDisconnect,
+    });
+
+    // start() should reject because the router closes the connection on bad roleKey
+    await expect(client.start()).rejects.toThrow();
+
+    badRouter.stop();
+  }, 10_000);
 });

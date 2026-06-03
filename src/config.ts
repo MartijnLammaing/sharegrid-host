@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const fpPattern = /[?&]fp=sha256:[0-9a-f]{64}(&|$)/;
+const keyPattern = /[?&]key=[A-Za-z0-9_-]+(&|$)/;
 
 const ConfigSchema = z.object({
   SHAREGRID_ROUTER_URL: z
@@ -8,6 +9,9 @@ const ConfigSchema = z.object({
     .url('must be a valid URL')
     .refine((val) => fpPattern.test(val), {
       message: 'must contain fp=sha256:<64 hex chars> query param',
+    })
+    .refine((val) => keyPattern.test(val), {
+      message: 'must contain key=<base64url> query param (host registration secret from router)',
     }),
   SHAREGRID_LISTEN_PORT: z.coerce
     .number()

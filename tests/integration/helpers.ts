@@ -92,6 +92,8 @@ export interface MockRouter {
   port: number;
   fingerprint: string;
   routerPublicKey: string;
+  /** Host registration secret — must match the `roleKey` in RegistrationPayload. */
+  hostSecret: string;
   /** Issue a token for a given hostId and fingerprint */
   issueToken(hostId: string, tlsFingerprint: string): string;
   stop(): void;
@@ -118,6 +120,9 @@ export async function startMockRouter(): Promise<MockRouter> {
     return encodeHostKeyToken(payload, sig);
   }
 
+  // Generate a host secret for role-based access control
+  const hostSecret = `mock-host-secret-${Date.now()}`;
+
   const port = await getFreePort();
 
   const activeSockets = new Set<TLSSocket>();
@@ -140,6 +145,11 @@ export async function startMockRouter(): Promise<MockRouter> {
 
           const msg = JSON.parse(line) as Record<string, unknown>;
           if (msg['type'] === 'register') {
+            // Validate roleKey — reject if missing or wrong
+            if (msg['roleKey'] !== hostSecret) {
+              sock.destroy();
+              return;
+            }
             const hostId = `host-${Date.now()}`;
             registeredHostId = hostId;
             const token = issueToken(hostId, msg['tlsFingerprint'] as string);
@@ -169,6 +179,7 @@ export async function startMockRouter(): Promise<MockRouter> {
     port,
     fingerprint,
     routerPublicKey: publicKeyPem,
+    hostSecret,
     issueToken,
     stop() {
       for (const s of activeSockets) s.destroy();
@@ -244,25 +255,27 @@ export interface HostStack {
 export async function startHost(mockRouter: MockRouter, llamaSocketPath?: string): Promise<HostStack> {
   const listenPort = await getFreePort();
 
-  const routerUrl = `https://127.0.0.1:${mockRouter.port}?fp=${mockRouter.fingerprint}`;
+  const routerUrl = `https://127.0.0.1:${mockRouter.port}?fp=${mockRouter.fingerprint}&key=${mockRouter.hostSecret}`;
 
   // Set env vars before loadConfig
   process.env['SHAREGRID_ROUTER_URL'] = routerUrl;
   process.env['SHAREGRID_LISTEN_PORT'] = String(listenPort);
   process.env['SHAREGRID_HEARTBEAT_INTERVAL'] = '30';
-  process.env['SHAREGRID_MODEL_NAME'] = 'test-model';
-  process.env['SHAREGRID_MODEL_CONTEXT_SIZE'] = '4096';
+  process.env['SHAREGRID_MODEL_FILE'] = 'test-model.gguf';
+  process.env['SHAREGRID_MODEL_PATH'] = '/tmp/test-model.gguf';
 
   const config = loadConfig();
   const hostLogger = createComponentLogger('host-integration-test');
 
-  const inferenceProxy = createInferenceProxy({ config, logger: hostLogger, llamaSocketPath });
+  const inferenceProxy = createInferenceProxy({ logger: hostLogger, llamaSocketPath });
   const sessionManager = createSessionManager({ config, logger: hostLogger, inferenceProxy });
 
   let currentToken = '';
+  const modelName = config.SHAREGRID_MODEL_FILE.replace(/\.gguf$/, '');
   const routerClient = createRouterClient({
     config,
     logger: hostLogger,
+    modelName,
     onRegistered: (info) => {
       currentToken = info.currentToken;
       const state: TokenState = {

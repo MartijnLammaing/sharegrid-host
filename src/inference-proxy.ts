@@ -77,7 +77,9 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
     const body = JSON.stringify({
       messages,
       stream: true,
-      repeat_penalty: 1.1,
+      temperature: 0.7,
+      repeat_penalty: 1.15,
+      frequency_penalty: 0.3,
     });
 
     cancelled = false;

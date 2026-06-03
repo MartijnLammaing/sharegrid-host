@@ -16,7 +16,7 @@ import { TLSSocket } from 'node:tls';
 import type { Logger } from 'pino';
 import selfsigned from 'selfsigned';
 import { computeFingerprint, parseFingerprintFromUrl, connectWithPinnedFingerprint } from '@sharegrid/shared/tls';
-import { TlsFingerprintError } from '@sharegrid/shared/errors';
+import { TlsFingerprintError, RoleKeyMissingError } from '@sharegrid/shared/errors';
 import {
   PROTOCOL_VERSION,
   type RegistrationPayload,
@@ -166,7 +166,7 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
 
   // ── Registration flow ─────────────────────────────────────────────────────
 
-  async function connectAndRegister(sock: TLSSocket): Promise<RegisteredInfo> {
+  async function connectAndRegister(sock: TLSSocket, roleKey: string): Promise<RegisteredInfo> {
     return new Promise<RegisteredInfo>((resolve, reject) => {
       let resolved = false;
 
@@ -221,6 +221,7 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
         modelName,
         port: config.SHAREGRID_LISTEN_PORT,
         tlsFingerprint,
+        roleKey,
       };
       sendMessage(sock, payload);
     });
@@ -272,14 +273,14 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
   // ── Connect lifecycle ─────────────────────────────────────────────────────
 
   async function connect(): Promise<void> {
-    const { host, port, fingerprint } = parseFingerprintFromUrl(config.SHAREGRID_ROUTER_URL);
+    const { host, port, fingerprint, roleKey } = parseFingerprintFromUrl(config.SHAREGRID_ROUTER_URL);
 
     const sock = await connectWithPinnedFingerprint({ host, port, fingerprint });
     socket = sock;
     log.info({ host, port }, 'connected to router');
 
     // After registration completes, swap the framer to the post-registration handler.
-    const info = await connectAndRegister(sock);
+    const info = await connectAndRegister(sock, roleKey);
     hostId = info.hostId;
     currentToken = info.currentToken;
     previousToken = info.previousToken;
@@ -322,6 +323,10 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
       } catch (err) {
         if (err instanceof TlsFingerprintError) {
           log.error({ err }, 'TLS fingerprint mismatch on reconnect; stopping');
+          return;
+        }
+        if (err instanceof RoleKeyMissingError) {
+          log.error({ err }, 'role key missing in router URL; stopping reconnect');
           return;
         }
         log.warn({ err }, 'reconnect attempt failed');
