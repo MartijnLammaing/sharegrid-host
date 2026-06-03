@@ -11,11 +11,6 @@
  *  - Coordinate session teardown: flush llama.cpp slot, release lock.
  *  - Exit the process on slot-erase failure.
  *
- * The full Phase 2 inference loop (inference_request handling) is implemented
- * in host Phase 2 of the implementation plan. This file currently contains
- * the Phase 0 stub — the session open/close/teardown skeleton is complete;
- * the inference dispatch calls forwardInference (not yet implemented).
- *
  * See: docs/architecture_llmhost.md §2.2, §4, §5.2
  *      docs/implementation_plan_llmhost.md Phase 2
  */
@@ -28,6 +23,7 @@ import {
   type SessionAck,
   type SessionReject,
   type InferenceRequestPayload,
+  type InferenceResponseChunk,
   type SessionClose,
   type SessionTimeout,
   type HostIncomingMessage,
@@ -155,13 +151,36 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
   // ── Session teardown ──────────────────────────────────────────────────────
 
-  async function teardown(sock: TLSSocket, idleTimer: NodeJS.Timeout | null): Promise<void> {
+  /**
+   * Coordinate session teardown.
+   *
+   * If an inference is in progress (inferenceController is set), abort it and
+   * wait for the forwardInference promise to settle — forwardInference will
+   * call flushSlot internally on abort. Otherwise call flushSlot ourselves.
+   * Either way, release the slot and close the socket.
+   */
+  async function teardown(
+    sock: TLSSocket,
+    idleTimer: NodeJS.Timeout | null,
+    inferenceController: AbortController | null,
+    inferencePromise: Promise<void> | null,
+  ): Promise<void> {
     if (idleTimer !== null) clearTimeout(idleTimer);
 
-    const erased = await inferenceProxy.flushSlot();
-    if (!erased) {
-      log.error('slot erase failed after session teardown — exiting');
-      process.exit(1);
+    if (inferenceController !== null) {
+      // Abort the in-flight inference. forwardInference calls flushSlot
+      // internally on abort — do NOT call it again here.
+      inferenceController.abort();
+      if (inferencePromise !== null) {
+        await inferencePromise;
+      }
+    } else {
+      // No active inference — flush the slot ourselves.
+      const erased = await inferenceProxy.flushSlot();
+      if (!erased) {
+        log.error('slot erase failed after session teardown — exiting');
+        process.exit(1);
+      }
     }
 
     releaseSlot();
@@ -189,6 +208,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     let idleTimer: NodeJS.Timeout | null = null;
     let tornDown = false;
 
+    // Track the active inference turn so teardown can abort it cleanly.
+    let inferenceController: AbortController | null = null;
+    let inferencePromise: Promise<void> | null = null;
+
     sock.setEncoding('utf8');
 
     // ── Idle timer ────────────────────────────────────────────────────────
@@ -206,8 +229,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async function doTeardown(): Promise<void> {
       if (tornDown) return;
       tornDown = true;
-      await teardown(sock, idleTimer);
+      await teardown(sock, idleTimer, inferenceController, inferencePromise);
       idleTimer = null;
+      inferenceController = null;
+      inferencePromise = null;
     }
 
     // ── Incoming data ─────────────────────────────────────────────────────
@@ -313,18 +338,51 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       log.info('session accepted');
     }
 
-    // Full Phase 2 inference loop implemented in host Phase 2 (implementation plan).
-    async function handleInferenceRequest(_msg: InferenceRequestPayload): Promise<void> {
+    async function handleInferenceRequest(msg: InferenceRequestPayload): Promise<void> {
       if (!sessionOpen) return;
+
+      // Reset the idle timer so this turn gets a fresh 30-minute window.
       resetIdleTimer();
       promptInFlight = true;
-      // Phase 2 implementation: forwardInference + stream inference_response_chunk messages.
-      await inferenceProxy.forwardInference(
-        _msg.body,
-        () => { /* streaming stub — Phase 2 */ },
-        new AbortController().signal,
+
+      // Set up abort control so teardown can cancel mid-turn if the socket closes.
+      const controller = new AbortController();
+      inferenceController = controller;
+
+      const promise = inferenceProxy.forwardInference(
+        msg.body,
+        (sseLine: string) => {
+          const chunk: InferenceResponseChunk = {
+            v: PROTOCOL_VERSION,
+            type: 'inference_response_chunk',
+            data: sseLine,
+          };
+          writeMessage(sock, chunk);
+        },
+        controller.signal,
       );
+      inferencePromise = promise;
+
+      await promise;
+
+      // Clear tracking before calling flushSlot so teardown doesn't double-flush
+      // if the socket happens to close concurrently at this exact moment.
+      inferenceController = null;
+      inferencePromise = null;
+
+      // Normal completion (no abort): forwardInference did NOT call flushSlot.
+      // Call it ourselves to wipe the KV cache between turns.
+      if (!controller.signal.aborted) {
+        const erased = await inferenceProxy.flushSlot();
+        if (!erased) {
+          log.error('slot erase failed after inference turn — exiting');
+          process.exit(1);
+        }
+      }
+
       promptInFlight = false;
+      log.info('inference turn complete');
+      // Session loop continues — wait for next inference_request
     }
 
     async function handleSessionClose(_msg?: SessionClose): Promise<void> {

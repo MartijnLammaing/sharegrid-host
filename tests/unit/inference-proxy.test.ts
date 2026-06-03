@@ -20,7 +20,7 @@ class MockResponse extends EventEmitter {
   }
   resume() { return this; }
   setEncoding(_enc: string) { return this; }
-  override destroy() { return this; }
+  destroy() { return this; }
 }
 
 class MockRequest extends EventEmitter {
@@ -29,7 +29,7 @@ class MockRequest extends EventEmitter {
 
   write(data: string) { this.written.push(data); return true; }
   end() { return this; }
-  override destroy() { this.destroyed = true; return this; }
+  destroy() { this.destroyed = true; return this; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
