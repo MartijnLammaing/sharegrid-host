@@ -62,12 +62,47 @@ export interface RouterClient {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Implementation
+// Constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BACKOFF_INITIAL_MS = 1_000;
 const BACKOFF_CAP_MS = 60_000;
 const PREVIOUS_TOKEN_TTL_MS = 60_000;
+const IP_DETECT_TIMEOUT_MS = 3_000;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IP auto-detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Detect the host's externally-reachable IP address.
+ * IPv6 is preferred over IPv4 to avoid NAT issues.
+ * Throws if neither can be detected.
+ */
+async function detectListenHost(): Promise<string> {
+  const tryFetch = async (url: string): Promise<string | null> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IP_DETECT_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      return (await res.text()).trim();
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const ipv6 = await tryFetch('https://api6.ipify.org');
+  if (ipv6 !== null && ipv6.length > 0) return ipv6;
+
+  const ipv4 = await tryFetch('https://api.ipify.org');
+  if (ipv4 !== null && ipv4.length > 0) return ipv4;
+
+  throw new Error(
+    'could not detect externally-reachable IP address — both api6.ipify.org and api.ipify.org failed',
+  );
+}
 
 export function createRouterClient(deps: RouterClientDeps): RouterClient {
   const { config, logger, modelName, onRegistered, onTokenUpdate, onDisconnect } = deps;
@@ -81,6 +116,7 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
   const tlsFingerprint = computeFingerprint(tlsCert);
 
   // ── Mutable state ─────────────────────────────────────────────────────────
+  let listenHost = '';
   let stopped = false;
   let socket: TLSSocket | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -222,6 +258,7 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
         port: config.SHAREGRID_LISTEN_PORT,
         tlsFingerprint,
         roleKey,
+        listenHost,
       };
       sendMessage(sock, payload);
     });
@@ -343,6 +380,9 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
     getTlsFingerprint: () => tlsFingerprint,
 
     async start(): Promise<void> {
+      log.info('detecting externally-reachable IP address...');
+      listenHost = await detectListenHost();
+      log.info({ listenHost }, 'detected listen host');
       await connect();
     },
 
