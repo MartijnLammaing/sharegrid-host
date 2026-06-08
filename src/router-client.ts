@@ -93,6 +93,12 @@ async function detectListenHost(): Promise<string> {
     }
   };
 
+  // Prefer env var set by start-dev.sh from the host OS — Docker Desktop on
+  // macOS does not give containers IPv6 internet access, so api6.ipify.org
+  // would silently fail inside the container.
+  const envIpv6 = (process.env['SHAREGRID_PUBLIC_IPV6'] ?? '').trim();
+  if (envIpv6.length > 0) return envIpv6;
+
   const ipv6 = await tryFetch('https://api6.ipify.org');
   if (ipv6 !== null && ipv6.length > 0) return ipv6;
 
