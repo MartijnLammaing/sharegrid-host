@@ -39,20 +39,20 @@ WORKDIR /app
 
 # Build @sharegrid/shared first — it is a file: dependency and must be
 # compiled before npm ci can install it correctly.
-COPY sharegrid-host/sharegrid-shared/package.json sharegrid-host/sharegrid-shared/package-lock.json \
-     ./sharegrid-shared/
+COPY sharegrid-shared/package.json sharegrid-shared/package-lock.json \
+      ./sharegrid-shared/
 RUN cd sharegrid-shared && npm ci --ignore-scripts
-COPY sharegrid-host/sharegrid-shared/src       ./sharegrid-shared/src
-COPY sharegrid-host/sharegrid-shared/tsconfig.json \
-     sharegrid-host/sharegrid-shared/tsconfig.build.json \
-     ./sharegrid-shared/
+COPY sharegrid-shared/src       ./sharegrid-shared/src
+COPY sharegrid-shared/tsconfig.json \
+      sharegrid-shared/tsconfig.build.json \
+      ./sharegrid-shared/
 RUN cd sharegrid-shared && npm run build
 
 # Build the host bundle.
-COPY sharegrid-host/package.json sharegrid-host/package-lock.json ./
+COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
-COPY sharegrid-host/src         ./src
-COPY sharegrid-host/tsconfig.json sharegrid-host/tsconfig.build.json ./
+COPY src         ./src
+COPY tsconfig.json tsconfig.build.json ./
 RUN npm run build
 
 # =============================================================================
@@ -65,7 +65,7 @@ RUN npm run build
 # Build-time configuration:
 #
 #   docker build \
-#     --build-arg MODEL_FILE=sharegrid-host/models/my-model.gguf \
+#     --build-arg MODEL_FILE=models/my-model.gguf \
 #     -t sharegrid-host .
 #
 # See: docs/architecture_llmhost.md §2.5 (build-time configuration)
@@ -93,7 +93,7 @@ COPY ${MODEL_FILE} /data/model.gguf
 
 # Healthcheck script: probes llama.cpp's GET /health endpoint over the
 # internal Unix socket.
-COPY sharegrid-host/scripts/healthcheck.js /app/healthcheck.js
+COPY scripts/healthcheck.js /app/healthcheck.js
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD ["node", "/app/healthcheck.js"]
