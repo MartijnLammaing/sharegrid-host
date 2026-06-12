@@ -64,9 +64,11 @@ RUN npm run build
 #
 # Build-time configuration:
 #
-#   docker build \
-#     --build-arg MODEL_FILE=models/my-model.gguf \
-#     -t sharegrid-host .
+#   docker build -t sharegrid-host .
+#
+# Place model .gguf files in the ./models/ directory before building.
+# The host scans this directory at startup and loads the first model
+# (alphabetically).
 #
 # See: docs/architecture_llmhost.md §2.5 (build-time configuration)
 # =============================================================================
@@ -80,16 +82,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
 RUN groupadd --gid 1001 sharegrid \
     && useradd --uid 1001 --gid sharegrid --no-create-home sharegrid
 
-ARG MODEL_FILE
 ENV NODE_ENV=production \
-    SHAREGRID_MODEL_FILE="${MODEL_FILE}" \
-    SHAREGRID_MODEL_PATH="/data/model.gguf"
+    SHAREGRID_MODELS_DIR="/data/models"
 
 USER sharegrid
 
 COPY --from=llama-builder /app/llama-server     /app/llama-server
 COPY --from=node-builder  /app/dist/bundle.cjs  /app/bundle.cjs
-COPY ${MODEL_FILE} /data/model.gguf
+COPY models/ /data/models/
 
 # Healthcheck script: probes llama.cpp's GET /health endpoint over the
 # internal Unix socket.

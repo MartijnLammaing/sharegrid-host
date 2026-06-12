@@ -12,8 +12,6 @@
 # Environment (optional):
 #   SHAREGRID_HOST_PORT    — Host port to publish         (default: 9000)
 #   SHAREGRID_HOST_IMAGE   — Docker image name            (default: sharegrid-host)
-#   MODEL_FILE             — Path to model .gguf file,    (default: models/Phi-3.5-mini-instruct-IQ2_M.gguf)
-#                            relative to this directory
 
 set -euo pipefail
 
@@ -21,7 +19,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PORT="${SHAREGRID_HOST_PORT:-9000}"
 IMAGE="${SHAREGRID_HOST_IMAGE:-sharegrid-host}"
-MODEL_FILE="${MODEL_FILE:-models/Phi-3.5-mini-instruct-IQ2_M.gguf}"
 NETWORK=sharegrid-net
 CONTAINER=sharegrid-host
 
@@ -47,7 +44,6 @@ if [[ "$BUILD" -eq 1 ]]; then
   log "Building ${IMAGE}..."
   docker build \
     -f "$SCRIPT_DIR/Dockerfile" \
-    --build-arg "MODEL_FILE=${MODEL_FILE}" \
     -t "$IMAGE" \
     "$SCRIPT_DIR"
 else

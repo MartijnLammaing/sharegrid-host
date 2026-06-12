@@ -261,8 +261,7 @@ export async function startHost(mockRouter: MockRouter, llamaSocketPath?: string
   process.env['SHAREGRID_ROUTER_URL'] = routerUrl;
   process.env['SHAREGRID_LISTEN_PORT'] = String(listenPort);
   process.env['SHAREGRID_HEARTBEAT_INTERVAL'] = '30';
-  process.env['SHAREGRID_MODEL_FILE'] = 'test-model.gguf';
-  process.env['SHAREGRID_MODEL_PATH'] = '/tmp/test-model.gguf';
+  process.env['SHAREGRID_MODELS_DIR'] = '/tmp';
 
   const config = loadConfig();
   const hostLogger = createComponentLogger('host-integration-test');
@@ -271,7 +270,7 @@ export async function startHost(mockRouter: MockRouter, llamaSocketPath?: string
   const sessionManager = createSessionManager({ config, logger: hostLogger, inferenceProxy });
 
   let currentToken = '';
-  const modelName = config.SHAREGRID_MODEL_FILE.replace(/\.gguf$/, '');
+  const modelName = 'test-model';
   const routerClient = createRouterClient({
     config,
     logger: hostLogger,
