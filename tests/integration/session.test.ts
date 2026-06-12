@@ -39,7 +39,7 @@ describe('Host integration — session', () => {
     vi.useRealTimers();
     for (const k of [
       'SHAREGRID_ROUTER_URL', 'SHAREGRID_LISTEN_PORT', 'SHAREGRID_HEARTBEAT_INTERVAL',
-      'SHAREGRID_MODEL_FILE', 'SHAREGRID_MODEL_PATH',
+      'SHAREGRID_MODELS_DIR',
     ]) {
       delete process.env[k];
     }

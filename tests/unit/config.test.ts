@@ -8,8 +8,7 @@ describe('loadConfig', () => {
     SHAREGRID_ROUTER_URL:
       'https://router.example.com:8443?fp=sha256:' + 'a'.repeat(64) + '&key=testHostKey123',
     SHAREGRID_LISTEN_PORT: '7000',
-    SHAREGRID_MODEL_FILE: 'model.gguf',
-    SHAREGRID_MODEL_PATH: '/models',
+    SHAREGRID_MODELS_DIR: '/data/models',
     SHAREGRID_LISTEN_HOST: '192.168.1.42',
   };
 
@@ -43,8 +42,7 @@ describe('loadConfig', () => {
     expect(config.SHAREGRID_ROUTER_URL).toBe(validEnv.SHAREGRID_ROUTER_URL);
     expect(config.SHAREGRID_LISTEN_PORT).toBe(7000);
     expect(config.SHAREGRID_HEARTBEAT_INTERVAL).toBe(30);
-    expect(config.SHAREGRID_MODEL_FILE).toBe('model.gguf');
-    expect(config.SHAREGRID_MODEL_PATH).toBe('/models');
+    expect(config.SHAREGRID_MODELS_DIR).toBe('/data/models');
     expect(config.SHAREGRID_LISTEN_HOST).toBe('192.168.1.42');
     expect(config.mode).toBe('lan');
   });
