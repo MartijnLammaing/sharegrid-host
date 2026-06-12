@@ -19,6 +19,7 @@ const config = {
   SHAREGRID_HEARTBEAT_INTERVAL: 30,
   SHAREGRID_MODELS_DIR: '/data/models',
   SHAREGRID_LISTEN_HOST: '10.0.0.1',
+  mode: 'lan' as const,
 };
 
 // ── Mock socket factory ───────────────────────────────────────────────────────

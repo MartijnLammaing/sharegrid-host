@@ -260,6 +260,7 @@ export async function startHost(mockRouter: MockRouter, llamaSocketPath?: string
   // Set env vars before loadConfig
   process.env['SHAREGRID_ROUTER_URL'] = routerUrl;
   process.env['SHAREGRID_LISTEN_PORT'] = String(listenPort);
+  process.env['SHAREGRID_LISTEN_HOST'] = '127.0.0.1';
   process.env['SHAREGRID_HEARTBEAT_INTERVAL'] = '30';
   process.env['SHAREGRID_MODELS_DIR'] = '/tmp';
 

@@ -400,8 +400,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async start(tlsCert: string, tlsKey: string): Promise<void> {
       return new Promise((resolve, reject) => {
         server = createTlsServer({ cert: tlsCert, key: tlsKey }, handleConnection);
-        server.listen(config.SHAREGRID_LISTEN_PORT, '0.0.0.0', () => {
-          log.info({ port: config.SHAREGRID_LISTEN_PORT }, 'session manager listening');
+        // Bind the IPv6 wildcard in internet mode so IPv6 sessions are accepted;
+        // the IPv4 wildcard otherwise. The advertised endpoint family is governed
+        // by the router's mode (see config.ts).
+        const bindAddr = config.mode === 'internet' ? '::' : '0.0.0.0';
+        server.listen(config.SHAREGRID_LISTEN_PORT, bindAddr, () => {
+          log.info({ port: config.SHAREGRID_LISTEN_PORT, bindAddr }, 'session manager listening');
           resolve();
         });
         server.on('error', reject);
