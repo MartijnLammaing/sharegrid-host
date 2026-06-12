@@ -12,6 +12,7 @@
 # Environment (optional):
 #   SHAREGRID_HOST_PORT    — Host port to publish         (default: 9000)
 #   SHAREGRID_HOST_IMAGE   — Docker image name            (default: sharegrid-host)
+#   SHAREGRID_ADVERTISE_IP — LAN IPv4 that users connect to (default: auto-detected)
 #   MODEL_FILE             — Path to model .gguf file,    (default: models/Phi-3.5-mini-instruct-IQ2_M.gguf)
 #                            relative to this directory
 
@@ -22,8 +23,35 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${SHAREGRID_HOST_PORT:-9000}"
 IMAGE="${SHAREGRID_HOST_IMAGE:-sharegrid-host}"
 MODEL_FILE="${MODEL_FILE:-models/Phi-3.5-mini-instruct-IQ2_M.gguf}"
-NETWORK=sharegrid-net
 CONTAINER=sharegrid-host
+
+# Detect the host machine's LAN IPv4 address. A container on a bridge network
+# cannot see this itself, so it must be injected from the host OS and advertised
+# to the router as the endpoint users dial directly.
+detect_lan_ip() {
+  case "$(uname -s)" in
+    Darwin)
+      for iface in $(ipconfig getiflist 2>/dev/null); do
+        ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+        [[ -n "$ip" ]] && { echo "$ip"; return 0; }
+      done
+      ;;
+    *)
+      ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
+      [[ -n "$ip" ]] && { echo "$ip"; return 0; }
+      ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+      [[ -n "$ip" ]] && { echo "$ip"; return 0; }
+      ;;
+  esac
+  return 1
+}
+
+ADVERTISE_IP="${SHAREGRID_ADVERTISE_IP:-$(detect_lan_ip || true)}"
+if [[ -z "$ADVERTISE_IP" ]]; then
+  echo "[host] ERROR: Could not auto-detect a LAN IPv4 address."
+  echo "[host] Set SHAREGRID_ADVERTISE_IP to the host machine's LAN IPv4 (e.g. 192.168.1.42)."
+  exit 1
+fi
 
 BUILD=1
 for arg in "$@"; do
@@ -60,10 +88,9 @@ docker rm -f "$CONTAINER" 2>/dev/null || true
 
 # ── Start ─────────────────────────────────────────────────────────────────────
 
-log "Starting ${CONTAINER}..."
+log "Starting ${CONTAINER} (advertising LAN IPv4 ${ADVERTISE_IP}:${PORT})..."
 docker run -d \
   --name "$CONTAINER" \
-  --network "$NETWORK" \
   --cap-drop ALL \
   --read-only \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m \
@@ -73,6 +100,7 @@ docker run -d \
   -p "${PORT}:${PORT}" \
   -e SHAREGRID_ROUTER_URL="$SHAREGRID_ROUTER_URL" \
   -e SHAREGRID_LISTEN_PORT="$PORT" \
+  -e SHAREGRID_LISTEN_HOST="$ADVERTISE_IP" \
   "$IMAGE"
 
 # ── Wait for registration ─────────────────────────────────────────────────────

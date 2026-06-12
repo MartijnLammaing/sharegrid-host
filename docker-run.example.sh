@@ -4,6 +4,10 @@
 # Replace <host-port> with the port you want to expose on the host machine.
 # The container port must match SHAREGRID_LISTEN_PORT.
 #
+# SHAREGRID_LISTEN_HOST must be this machine's LAN IPv4 address — it is the
+# endpoint users dial directly. A container cannot detect the host LAN IP itself,
+# so it must be supplied here (docker-run.sh auto-detects it for you).
+#
 # Reference the seccomp profile with the absolute path on the host machine:
 #   --security-opt seccomp=/path/to/seccomp-profile.json
 #
@@ -24,6 +28,7 @@ docker run --cap-drop ALL \
   --ipc=none \
   --restart=on-failure \
   -p 9000:9000 \
-  -e SHAREGRID_ROUTER_URL="https://172.17.0.2:8443?fp=sha256:6059adc8a497ba0070f0f10af6ce130ae58a46c83e70c4ed98e12b5bfd01f98e&key=<host-secret-from-router-banner>" \
+  -e SHAREGRID_ROUTER_URL="https://192.168.1.10:8443?fp=sha256:6059adc8a497ba0070f0f10af6ce130ae58a46c83e70c4ed98e12b5bfd01f98e&key=<host-secret-from-router-banner>" \
   -e SHAREGRID_LISTEN_PORT=9000 \
+  -e SHAREGRID_LISTEN_HOST=192.168.1.42 \
   sharegrid-host
