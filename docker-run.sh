@@ -75,28 +75,6 @@ docker run -d \
   -e SHAREGRID_LISTEN_PORT="$PORT" \
   "$IMAGE"
 
-sleep 2
-
-HOST_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CONTAINER")
-log "Detected Docker bridge IP: ${HOST_IP}"
-
-docker rm -f "$CONTAINER"
-
-docker run -d \
-  --name "$CONTAINER" \
-  --network "$NETWORK" \
-  --cap-drop ALL \
-  --read-only \
-  --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-  --security-opt no-new-privileges \
-  --ipc=none \
-  --restart=on-failure \
-  -p "${PORT}:${PORT}" \
-  -e SHAREGRID_ROUTER_URL="$SHAREGRID_ROUTER_URL" \
-  -e SHAREGRID_LISTEN_PORT="$PORT" \
-  -e SHAREGRID_LISTEN_HOST="$HOST_IP" \
-  "$IMAGE"
-
 # ── Wait for registration ─────────────────────────────────────────────────────
 
 log "Waiting for host to register with router..."

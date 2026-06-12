@@ -101,15 +101,10 @@ async function detectListenHost(): Promise<string> {
   const envIpv6 = (process.env['SHAREGRID_PUBLIC_IPV6'] ?? '').trim();
   if (envIpv6.length > 0) return envIpv6;
 
-  const ipv6 = await tryFetch('https://api6.ipify.org');
-  if (ipv6 !== null && ipv6.length > 0) return ipv6;
-
-  const ipv4 = await tryFetch('https://api.ipify.org');
-  if (ipv4 !== null && ipv4.length > 0) return ipv4;
-
-  // Docker fallback: when running inside a container, use the non-loopback IPv4
-  // interface address (the Docker bridge IP) so peers on the same Docker network
-  // can reach us.
+  // Docker: when running inside a container, use the non-loopback IPv4 interface
+  // address (the Docker bridge IP) so peers on the same Docker network can reach us.
+  // Check this BEFORE api.ipify.org, which would return the public IP and break
+  // intra-container communication.
   if (existsSync('/.dockerenv')) {
     const ifaces = networkInterfaces();
     for (const addrs of Object.values(ifaces)) {
@@ -119,6 +114,12 @@ async function detectListenHost(): Promise<string> {
       }
     }
   }
+
+  const ipv6 = await tryFetch('https://api6.ipify.org');
+  if (ipv6 !== null && ipv6.length > 0) return ipv6;
+
+  const ipv4 = await tryFetch('https://api.ipify.org');
+  if (ipv4 !== null && ipv4.length > 0) return ipv4;
 
   throw new Error(
     'could not detect externally-reachable IP address — api.ipify.org failed and no fallback available',
