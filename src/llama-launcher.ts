@@ -12,25 +12,24 @@
 import { spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import type { Logger } from 'pino';
-import type { Config } from './config.js';
 
 const LLAMA_BINARY = '/app/llama-server';
 const LLAMA_SOCKET_PATH = '/tmp/llama.sock';
 const READY_POLL_INTERVAL_MS = 500;
 const READY_TIMEOUT_MS = 120_000;
 
-export async function launchLlama(deps: { config: Config; logger: Logger }): Promise<void> {
-  const { config, logger } = deps;
+export async function launchLlama(deps: { activeModelPath: string; logger: Logger }): Promise<void> {
+  const { activeModelPath, logger } = deps;
   const log = logger.child({ component: 'llama-launcher' });
 
   const args = [
-    '--model', config.SHAREGRID_MODEL_PATH,
+    '--model', activeModelPath,
     '--host', LLAMA_SOCKET_PATH,
     '--parallel', '1',
     '--ctx-size', '4096',
   ];
 
-  log.info({ model: config.SHAREGRID_MODEL_PATH }, 'spawning llama-server');
+  log.info({ model: activeModelPath }, 'spawning llama-server');
 
   const child = spawn(LLAMA_BINARY, args, {
     stdio: ['ignore', 'pipe', 'pipe'],

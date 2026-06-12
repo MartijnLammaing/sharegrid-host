@@ -79,8 +79,7 @@ const config = {
   SHAREGRID_ROUTER_URL: 'https://x:1?fp=sha256:' + 'a'.repeat(64),
   SHAREGRID_LISTEN_PORT: 9000,
   SHAREGRID_HEARTBEAT_INTERVAL: 30,
-  SHAREGRID_MODEL_FILE: 'test-model.gguf',
-  SHAREGRID_MODEL_PATH: '/data/model.gguf',
+  SHAREGRID_MODELS_DIR: '/data/models',
   SHAREGRID_LISTEN_HOST: '10.0.0.1',
   mode: 'lan' as const,
 };

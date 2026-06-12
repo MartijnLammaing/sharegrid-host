@@ -18,6 +18,7 @@
 import { basename } from 'node:path';
 import { loadConfig } from './config.js';
 import { createComponentLogger } from './logger.js';
+import { scanModels } from './model-scanner.js';
 import { launchLlama } from './llama-launcher.js';
 import { createInferenceProxy } from './inference-proxy.js';
 import { createSessionManager } from './session-manager.js';
@@ -32,10 +33,30 @@ async function main(): Promise<void> {
   const logger = createComponentLogger('main');
   logger.info('starting LLMHost');
 
-  // 3. Launch llama-server and wait for the Unix socket to be ready.
-  await launchLlama({ config, logger });
+  // 2b. Discover models and pick the active one.
+  const models = await scanModels(config.SHAREGRID_MODELS_DIR);
+  if (models.length === 0) {
+    logger.error({ dir: config.SHAREGRID_MODELS_DIR }, 'no .gguf models found; cannot start');
+    process.exit(1);
+  }
+  const activeModel = models[0];
+  if (!activeModel) {
+    logger.error('model selection failed; cannot start');
+    process.exit(1);
+  }
+  logger.info(
+    {
+      activeModel: activeModel.name,
+      modelPath: activeModel.path,
+      totalModels: models.length,
+    },
+    'selected active model from directory scan',
+  );
 
-  const modelName = basename(config.SHAREGRID_MODEL_FILE, '.gguf');
+  // 3. Launch llama-server and wait for the Unix socket to be ready.
+  await launchLlama({ activeModelPath: activeModel.path, logger });
+
+  const modelName = activeModel.name;
 
   // 4. Inference proxy.
   const inferenceProxy = createInferenceProxy({ logger });

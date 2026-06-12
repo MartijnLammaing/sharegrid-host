@@ -115,7 +115,6 @@ if [[ "$BUILD" -eq 1 ]]; then
   log "Building ${IMAGE}..."
   docker build \
     -f "$SCRIPT_DIR/Dockerfile" \
-    --build-arg "MODEL_FILE=${MODEL_FILE}" \
     -t "$IMAGE" \
     "$SCRIPT_DIR"
 else

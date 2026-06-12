@@ -17,8 +17,7 @@ const config = {
   SHAREGRID_ROUTER_URL: 'https://router.example.com:8443?fp=sha256:' + 'a'.repeat(64) + '&key=testHostSecret',
   SHAREGRID_LISTEN_PORT: 9000,
   SHAREGRID_HEARTBEAT_INTERVAL: 30,
-  SHAREGRID_MODEL_FILE: 'test-model.gguf',
-  SHAREGRID_MODEL_PATH: '/data/test-model.gguf',
+  SHAREGRID_MODELS_DIR: '/data/models',
   SHAREGRID_LISTEN_HOST: '10.0.0.1',
   mode: 'lan' as const,
 };
