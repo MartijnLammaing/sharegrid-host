@@ -46,6 +46,29 @@ describe('loadConfig', () => {
     expect(config.SHAREGRID_MODEL_FILE).toBe('model.gguf');
     expect(config.SHAREGRID_MODEL_PATH).toBe('/models');
     expect(config.SHAREGRID_LISTEN_HOST).toBe('192.168.1.42');
+    expect(config.mode).toBe('lan');
+  });
+
+  describe('internet mode', () => {
+    const internetEnv = {
+      ...validEnv,
+      SHAREGRID_ROUTER_URL:
+        'https://[2001:db8::1]:8443?fp=sha256:' + 'a'.repeat(64) + '&key=testHostKey123&mode=internet',
+      SHAREGRID_LISTEN_HOST: '2001:db8::2',
+    };
+
+    it('accepts an IPv6 SHAREGRID_LISTEN_HOST and reports mode=internet', async () => {
+      Object.assign(process.env, internetEnv);
+      const config = await load();
+      expect(config.mode).toBe('internet');
+      expect(config.SHAREGRID_LISTEN_HOST).toBe('2001:db8::2');
+    });
+
+    it('exits with code 1 when SHAREGRID_LISTEN_HOST is IPv4 in internet mode', async () => {
+      Object.assign(process.env, internetEnv, { SHAREGRID_LISTEN_HOST: '192.168.1.42' });
+      await expect(load()).rejects.toThrow('process.exit called');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    });
   });
 
   it('exits with code 1 when SHAREGRID_LISTEN_HOST is missing', async () => {

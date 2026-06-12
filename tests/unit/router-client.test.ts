@@ -20,6 +20,7 @@ const config = {
   SHAREGRID_MODEL_FILE: 'test-model.gguf',
   SHAREGRID_MODEL_PATH: '/data/test-model.gguf',
   SHAREGRID_LISTEN_HOST: '10.0.0.1',
+  mode: 'lan' as const,
 };
 
 // ── Mock socket factory ───────────────────────────────────────────────────────
