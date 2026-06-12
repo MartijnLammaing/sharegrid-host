@@ -13,8 +13,10 @@
 #   SHAREGRID_HOST_PORT    — Host port to publish         (default: 9000)
 #   SHAREGRID_HOST_IMAGE   — Docker image name            (default: sharegrid-host)
 #   SHAREGRID_ADVERTISE_IP — address that users connect to (default: auto-detected)
-#   MODEL_FILE             — Path to model .gguf file,    (default: models/Phi-3.5-mini-instruct-IQ2_M.gguf)
-#                            relative to this directory
+#
+# The host scans /data/models inside the image (SHAREGRID_MODELS_DIR, baked in
+# by the Dockerfile) and loads the first .gguf alphabetically — no model env var
+# is required at run time.
 #
 # The network mode (lan/internet) is read from the `mode` query parameter of
 # SHAREGRID_ROUTER_URL — the host advertises its IP in the family the router's
@@ -27,7 +29,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PORT="${SHAREGRID_HOST_PORT:-9000}"
 IMAGE="${SHAREGRID_HOST_IMAGE:-sharegrid-host}"
-MODEL_FILE="${MODEL_FILE:-models/Phi-3.5-mini-instruct-IQ2_M.gguf}"
 CONTAINER=sharegrid-host
 
 if [[ -z "${SHAREGRID_ROUTER_URL:-}" ]]; then

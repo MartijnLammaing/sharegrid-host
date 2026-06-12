@@ -8,6 +8,7 @@ describe('loadConfig', () => {
     SHAREGRID_ROUTER_URL:
       'https://router.example.com:8443?fp=sha256:' + 'a'.repeat(64) + '&key=testHostKey123',
     SHAREGRID_LISTEN_PORT: '7000',
+    SHAREGRID_MODELS_DIR: '/data/models',
     SHAREGRID_LISTEN_HOST: '192.168.1.42',
   };
 
