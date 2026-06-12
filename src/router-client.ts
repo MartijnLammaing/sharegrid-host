@@ -12,8 +12,6 @@
  *      docs/implementation_plan_llmhost.md Phase 3A
  */
 
-import { existsSync } from 'node:fs';
-import { networkInterfaces } from 'node:os';
 import { TLSSocket } from 'node:tls';
 import type { Logger } from 'pino';
 import selfsigned from 'selfsigned';
@@ -70,61 +68,6 @@ export interface RouterClient {
 const BACKOFF_INITIAL_MS = 1_000;
 const BACKOFF_CAP_MS = 60_000;
 const PREVIOUS_TOKEN_TTL_MS = 60_000;
-const IP_DETECT_TIMEOUT_MS = 3_000;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// IP auto-detection
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Detect the host's externally-reachable IP address.
- * IPv6 is preferred over IPv4 to avoid NAT issues.
- * Throws if neither can be detected.
- */
-async function detectListenHost(): Promise<string> {
-  const tryFetch = async (url: string): Promise<string | null> => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), IP_DETECT_TIMEOUT_MS);
-    try {
-      const res = await fetch(url, { signal: controller.signal });
-      return (await res.text()).trim();
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-  };
-
-  // Prefer env var set by start-dev.sh from the host OS — Docker Desktop on
-  // macOS does not give containers IPv6 internet access, so api6.ipify.org
-  // would silently fail inside the container.
-  const envIpv6 = (process.env['SHAREGRID_PUBLIC_IPV6'] ?? '').trim();
-  if (envIpv6.length > 0) return envIpv6;
-
-  // Docker: when running inside a container, use the non-loopback IPv4 interface
-  // address (the Docker bridge IP) so peers on the same Docker network can reach us.
-  // Check this BEFORE api.ipify.org, which would return the public IP and break
-  // intra-container communication.
-  if (existsSync('/.dockerenv')) {
-    const ifaces = networkInterfaces();
-    for (const addrs of Object.values(ifaces)) {
-      if (addrs === undefined) continue;
-      for (const addr of addrs) {
-        if (addr.family === 'IPv4' && !addr.internal) return addr.address;
-      }
-    }
-  }
-
-  const ipv6 = await tryFetch('https://api6.ipify.org');
-  if (ipv6 !== null && ipv6.length > 0) return ipv6;
-
-  const ipv4 = await tryFetch('https://api.ipify.org');
-  if (ipv4 !== null && ipv4.length > 0) return ipv4;
-
-  throw new Error(
-    'could not detect externally-reachable IP address — api.ipify.org failed and no fallback available',
-  );
-}
 
 export function createRouterClient(deps: RouterClientDeps): RouterClient {
   const { config, logger, modelName, onRegistered, onTokenUpdate, onDisconnect } = deps;
@@ -402,14 +345,8 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
     getTlsFingerprint: () => tlsFingerprint,
 
     async start(): Promise<void> {
-      if (config.SHAREGRID_LISTEN_HOST) {
-        listenHost = config.SHAREGRID_LISTEN_HOST;
-        log.info({ listenHost }, 'using configured listen host');
-      } else {
-        log.info('detecting externally-reachable IP address...');
-        listenHost = await detectListenHost();
-        log.info({ listenHost }, 'detected listen host');
-      }
+      listenHost = config.SHAREGRID_LISTEN_HOST;
+      log.info({ listenHost }, 'advertising configured LAN IPv4 to router');
       await connect();
     },
 

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 const fpPattern = /[?&]fp=sha256:[0-9a-f]{64}(&|$)/;
 const keyPattern = /[?&]key=[A-Za-z0-9_-]+(&|$)/;
+const ipv4Pattern = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
 const ConfigSchema = z.object({
   SHAREGRID_ROUTER_URL: z
@@ -21,7 +22,12 @@ const ConfigSchema = z.object({
   SHAREGRID_HEARTBEAT_INTERVAL: z.coerce.number().int().positive().default(30),
   SHAREGRID_MODEL_FILE: z.string().min(1, 'must not be empty'),
   SHAREGRID_MODEL_PATH: z.string().min(1, 'must not be empty'),
-  SHAREGRID_LISTEN_HOST: z.string().default(''),
+  SHAREGRID_LISTEN_HOST: z
+    .string()
+    .refine((val) => ipv4Pattern.test(val), {
+      message:
+        'must be the host machine LAN IPv4 address that users connect to (e.g. 192.168.1.42); set by docker-run.sh',
+    }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

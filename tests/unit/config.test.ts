@@ -10,6 +10,7 @@ describe('loadConfig', () => {
     SHAREGRID_LISTEN_PORT: '7000',
     SHAREGRID_MODEL_FILE: 'model.gguf',
     SHAREGRID_MODEL_PATH: '/models',
+    SHAREGRID_LISTEN_HOST: '192.168.1.42',
   };
 
   let exitSpy: MockInstance<(code?: number) => never>;
@@ -44,7 +45,24 @@ describe('loadConfig', () => {
     expect(config.SHAREGRID_HEARTBEAT_INTERVAL).toBe(30);
     expect(config.SHAREGRID_MODEL_FILE).toBe('model.gguf');
     expect(config.SHAREGRID_MODEL_PATH).toBe('/models');
+    expect(config.SHAREGRID_LISTEN_HOST).toBe('192.168.1.42');
   });
+
+  it('exits with code 1 when SHAREGRID_LISTEN_HOST is missing', async () => {
+    Object.assign(process.env, validEnv);
+    delete process.env['SHAREGRID_LISTEN_HOST'];
+    await expect(load()).rejects.toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it.each(['not-an-ip', '256.0.0.1', '10.0.0', '::1', ''])(
+    'exits with code 1 for invalid SHAREGRID_LISTEN_HOST: %s',
+    async (host) => {
+      Object.assign(process.env, validEnv, { SHAREGRID_LISTEN_HOST: host });
+      await expect(load()).rejects.toThrow('process.exit called');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+    },
+  );
 
   it('applies provided SHAREGRID_HEARTBEAT_INTERVAL instead of default', async () => {
     Object.assign(process.env, validEnv, { SHAREGRID_HEARTBEAT_INTERVAL: '60' });
