@@ -21,6 +21,7 @@ const ConfigSchema = z.object({
   SHAREGRID_HEARTBEAT_INTERVAL: z.coerce.number().int().positive().default(30),
   SHAREGRID_MODEL_FILE: z.string().min(1, 'must not be empty'),
   SHAREGRID_MODEL_PATH: z.string().min(1, 'must not be empty'),
+  SHAREGRID_LISTEN_HOST: z.string().default(''),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

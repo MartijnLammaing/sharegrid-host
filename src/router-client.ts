@@ -12,6 +12,8 @@
  *      docs/implementation_plan_llmhost.md Phase 3A
  */
 
+import { existsSync } from 'node:fs';
+import { networkInterfaces } from 'node:os';
 import { TLSSocket } from 'node:tls';
 import type { Logger } from 'pino';
 import selfsigned from 'selfsigned';
@@ -105,8 +107,21 @@ async function detectListenHost(): Promise<string> {
   const ipv4 = await tryFetch('https://api.ipify.org');
   if (ipv4 !== null && ipv4.length > 0) return ipv4;
 
+  // Docker fallback: when running inside a container, use the non-loopback IPv4
+  // interface address (the Docker bridge IP) so peers on the same Docker network
+  // can reach us.
+  if (existsSync('/.dockerenv')) {
+    const ifaces = networkInterfaces();
+    for (const addrs of Object.values(ifaces)) {
+      if (addrs === undefined) continue;
+      for (const addr of addrs) {
+        if (addr.family === 'IPv4' && !addr.internal) return addr.address;
+      }
+    }
+  }
+
   throw new Error(
-    'could not detect externally-reachable IP address — both api6.ipify.org and api.ipify.org failed',
+    'could not detect externally-reachable IP address — api.ipify.org failed and no fallback available',
   );
 }
 
@@ -386,9 +401,14 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
     getTlsFingerprint: () => tlsFingerprint,
 
     async start(): Promise<void> {
-      log.info('detecting externally-reachable IP address...');
-      listenHost = await detectListenHost();
-      log.info({ listenHost }, 'detected listen host');
+      if (config.SHAREGRID_LISTEN_HOST) {
+        listenHost = config.SHAREGRID_LISTEN_HOST;
+        log.info({ listenHost }, 'using configured listen host');
+      } else {
+        log.info('detecting externally-reachable IP address...');
+        listenHost = await detectListenHost();
+        log.info({ listenHost }, 'detected listen host');
+      }
       await connect();
     },
 
