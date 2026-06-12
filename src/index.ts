@@ -15,7 +15,6 @@
  *      docs/implementation_plan_llmhost.md Phase 3D
  */
 
-import { basename } from 'node:path';
 import { loadConfig } from './config.js';
 import { createComponentLogger } from './logger.js';
 import { scanModels } from './model-scanner.js';
