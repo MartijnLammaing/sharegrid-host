@@ -4,9 +4,12 @@
 # Replace <host-port> with the port you want to expose on the host machine.
 # The container port must match SHAREGRID_LISTEN_PORT.
 #
-# SHAREGRID_LISTEN_HOST must be this machine's LAN IPv4 address — it is the
-# endpoint users dial directly. A container cannot detect the host LAN IP itself,
-# so it must be supplied here (docker-run.sh auto-detects it for you).
+# SHAREGRID_LISTEN_HOST must be this machine's advertised address — it is the
+# endpoint users dial directly. A container cannot detect the host address itself,
+# so it must be supplied here (docker-run.sh auto-detects it for you). It must
+# match the router's network mode: a LAN IPv4 address when the router URL has no
+# mode param, or a globally-routable IPv6 address when the URL carries
+# mode=internet (e.g. SHAREGRID_LISTEN_HOST=2001:db8::2).
 #
 # Reference the seccomp profile with the absolute path on the host machine:
 #   --security-opt seccomp=/path/to/seccomp-profile.json
