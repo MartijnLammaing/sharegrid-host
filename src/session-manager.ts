@@ -204,7 +204,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     let buf = '';
     let sessionOpen = false;
-    let promptInFlight = false;
     let idleTimer: NodeJS.Timeout | null = null;
     let tornDown = false;
 
@@ -343,7 +342,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
       // Reset the idle timer so this turn gets a fresh 30-minute window.
       resetIdleTimer();
-      promptInFlight = true;
 
       // Set up abort control so teardown can cancel mid-turn if the socket closes.
       const controller = new AbortController();
@@ -380,7 +378,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         }
       }
 
-      promptInFlight = false;
       log.info('inference turn complete');
       // Session loop continues — wait for next inference_request
     }
