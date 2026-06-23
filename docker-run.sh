@@ -74,7 +74,7 @@ detect_global_ipv6() {
       ifconfig 2>/dev/null | awk '
         /inet6 / {
           ip=$2; sub(/%.*/,"",ip);
-          if (ip !~ /^fe80/ && ip != "::1" && ip !~ /^f[cd]/) { print ip; exit }
+          if (ip !~ /^fe[89ab]/ && ip != "::1" && ip !~ /^f[cd]/) { print ip; exit }
         }'
       ;;
     *)
@@ -137,7 +137,7 @@ docker run -d \
   --security-opt no-new-privileges \
   --ipc=none \
   --restart=on-failure \
-  -p "${PORT}:${PORT}" \
+  -p "$( [[ "$MODE" == "internet" ]] && echo "[::]:${PORT}:${PORT}" || echo "${PORT}:${PORT}" )" \
   -e SHAREGRID_ROUTER_URL="$SHAREGRID_ROUTER_URL" \
   -e SHAREGRID_LISTEN_PORT="$PORT" \
   -e SHAREGRID_LISTEN_HOST="$ADVERTISE_IP" \
