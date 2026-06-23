@@ -346,7 +346,7 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
 
     async start(): Promise<void> {
       listenHost = config.SHAREGRID_LISTEN_HOST;
-      log.info({ listenHost }, 'advertising configured LAN IPv4 to router');
+      log.info({ listenHost }, 'advertising listen host to router');
       await connect();
     },
 
@@ -369,3 +369,4 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
