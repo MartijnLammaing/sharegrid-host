@@ -193,7 +193,11 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
           res.resume();
           res.on('end', () => {
             clearTimeout(timer);
-            const ok = res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300;
+            // 404 means the slot was never populated (e.g. after a 400 inference
+            // error) — that is the desired end state, so treat it as success.
+            const ok = res.statusCode !== undefined && (
+              (res.statusCode >= 200 && res.statusCode < 300) || res.statusCode === 404
+            );
             if (!ok) {
               log.error({ statusCode: res.statusCode }, 'llama.cpp slot erase returned non-2xx');
             }
