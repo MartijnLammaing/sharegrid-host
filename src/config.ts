@@ -39,6 +39,7 @@ const ConfigSchema = z
     SHAREGRID_HEARTBEAT_INTERVAL: z.coerce.number().int().positive().default(30),
     SHAREGRID_MODELS_DIR: z.string().min(1, 'must not be empty'),
     SHAREGRID_LISTEN_HOST: z.string().min(1, 'must not be empty'),
+    SHAREGRID_MODEL_CONTEXT_SIZE: z.coerce.number().int().positive().default(32768),
   })
   .superRefine((cfg, ctx) => {
     // The advertised address family must match the router's network mode:

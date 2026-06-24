@@ -18,15 +18,15 @@ const LLAMA_SOCKET_PATH = '/tmp/llama.sock';
 const READY_POLL_INTERVAL_MS = 500;
 const READY_TIMEOUT_MS = 120_000;
 
-export async function launchLlama(deps: { activeModelPath: string; logger: Logger }): Promise<void> {
-  const { activeModelPath, logger } = deps;
+export async function launchLlama(deps: { activeModelPath: string; contextSize: number; logger: Logger }): Promise<void> {
+  const { activeModelPath, contextSize, logger } = deps;
   const log = logger.child({ component: 'llama-launcher' });
 
   const args = [
     '--model', activeModelPath,
     '--host', LLAMA_SOCKET_PATH,
     '--parallel', '1',
-    '--ctx-size', '4096',
+    '--ctx-size', String(contextSize),
   ];
 
   log.info({ model: activeModelPath }, 'spawning llama-server');
