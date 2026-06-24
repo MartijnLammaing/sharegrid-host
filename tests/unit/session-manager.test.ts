@@ -372,12 +372,12 @@ describe('SessionManager — inference loop', () => {
     expect(sseLines).toContain('data: [DONE]');
   });
 
-  it('flushSlot called after normal inference completion', async () => {
+  it('flushSlot NOT called after normal inference completion (KV cache preserved for prefix reuse)', async () => {
     const { sock } = await startAndOpen();
     mockInferenceProxy.forwardInference.mockResolvedValue(undefined);
     sock.inject({ v: PROTOCOL_VERSION, type: 'inference_request', body: '{}' });
     await new Promise((r) => setTimeout(r, 20));
-    expect(mockInferenceProxy.flushSlot).toHaveBeenCalledOnce();
+    expect(mockInferenceProxy.flushSlot).not.toHaveBeenCalled();
   });
 
   it('session accepts a second inference_request after first completes', async () => {
@@ -420,24 +420,6 @@ describe('SessionManager — inference loop', () => {
     expect(capturedSignal!.aborted).toBe(true);
     // flushSlot called exactly once — by forwardInference path (mocked), NOT by teardown again
     expect(mockInferenceProxy.flushSlot).toHaveBeenCalledTimes(0); // teardown skips it; forwardInference handles it
-  });
-
-  it('process.exit(1) when flushSlot fails after normal completion', async () => {
-    mockInferenceProxy.flushSlot.mockResolvedValue(false);
-
-    const proc = process as { exit: (code?: number) => never };
-    const exitSpy: MockInstance<(code?: number) => never> = vi.spyOn(proc, 'exit').mockImplementation((_code?: number): never => {
-      throw new Error('process.exit called');
-    });
-
-    const { sock } = await startAndOpen();
-
-    process.once('unhandledRejection', () => undefined);
-    sock.inject({ v: PROTOCOL_VERSION, type: 'inference_request', body: '{}' });
-    await new Promise((r) => setTimeout(r, 50));
-
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    vi.restoreAllMocks();
   });
 
   it('idle timer resets on each inference_request', async () => {
