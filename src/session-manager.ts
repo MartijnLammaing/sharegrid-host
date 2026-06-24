@@ -363,22 +363,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
       await promise;
 
-      // Clear tracking before calling flushSlot so teardown doesn't double-flush
-      // if the socket happens to close concurrently at this exact moment.
+      // Clear tracking now that the turn has settled.
       inferenceController = null;
       inferencePromise = null;
 
-      // Normal completion (no abort): forwardInference did NOT call flushSlot.
-      // Call it ourselves to wipe the KV cache between turns.
-      if (!controller.signal.aborted) {
-        const erased = await inferenceProxy.flushSlot();
-        if (!erased) {
-          log.error('slot erase failed after inference turn — exiting');
-          process.exit(1);
-        }
-      }
-
       log.info('inference turn complete');
+      // KV cache is intentionally left intact so llama.cpp can reuse the
+      // cached prefix on the next turn (OpenAI-compatible clients always
+      // resend the full conversation history, so the prefix hit is guaranteed).
+      // teardown() flushes the slot when the session ends, preventing any
+      // bleed to the next user session.
       // Session loop continues — wait for next inference_request
     }
 
