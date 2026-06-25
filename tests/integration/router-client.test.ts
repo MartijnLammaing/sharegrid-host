@@ -160,7 +160,7 @@ describe('Host integration — status reporting (Phase 3)', () => {
 
     // Close the session
     sendMsg(userSock, { v: PROTOCOL_VERSION, type: 'session_close' });
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 400));
     userSock.destroy();
 
     // Wait for the second host_status_update
@@ -184,6 +184,9 @@ describe('Host integration — status reporting (Phase 3)', () => {
     expect(heartbeats.length).toBeGreaterThanOrEqual(1);
     expect(heartbeats[0]!['activeSessions']).toBe(1);
 
+    // Close gracefully so teardown completes before afterEach stops the llama server
+    sendMsg(userSock, { v: PROTOCOL_VERSION, type: 'session_close' });
+    await new Promise((r) => setTimeout(r, 300));
     userSock.destroy();
   }, 12_000);
 });
