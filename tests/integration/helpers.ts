@@ -94,6 +94,8 @@ export interface MockRouter {
   routerPublicKey: string;
   /** Host registration secret — must match the `roleKey` in RegistrationPayload. */
   hostSecret: string;
+  /** All messages received from the host (for test assertions). */
+  receivedMessages: Array<Record<string, unknown>>;
   /** Issue a token for a given hostId and fingerprint */
   issueToken(hostId: string, tlsFingerprint: string): string;
   stop(): void;
@@ -122,6 +124,7 @@ export async function startMockRouter(): Promise<MockRouter> {
 
   // Generate a host secret for role-based access control
   const hostSecret = `mock-host-secret-${Date.now()}`;
+  const receivedMessages: Array<Record<string, unknown>> = [];
 
   const port = await getFreePort();
 
@@ -144,6 +147,7 @@ export async function startMockRouter(): Promise<MockRouter> {
           if (!line) continue;
 
           const msg = JSON.parse(line) as Record<string, unknown>;
+          receivedMessages.push(msg);
           if (msg['type'] === 'register') {
             // Validate roleKey — reject if missing or wrong
             if (msg['roleKey'] !== hostSecret) {
@@ -180,6 +184,7 @@ export async function startMockRouter(): Promise<MockRouter> {
     fingerprint,
     routerPublicKey: publicKeyPem,
     hostSecret,
+    receivedMessages,
     issueToken,
     stop() {
       for (const s of activeSockets) s.destroy();
@@ -217,7 +222,7 @@ export async function startMockLlamaServer(socketPath = generateLlamaSocketPath(
   } as MockLlamaServer & { socketPath: string };
 
   const server = createHttpServer((_req: IncomingMessage, res: ServerResponse) => {
-    if (_req.method === 'DELETE' && _req.url === '/slots/0') {
+    if (_req.method === 'DELETE' && _req.url?.startsWith('/slots/')) {
       state.flushCount++;
       res.writeHead(state.flushShouldFail ? 500 : 200);
       res.end();
@@ -261,21 +266,34 @@ export async function startHost(mockRouter: MockRouter, llamaSocketPath?: string
   process.env['SHAREGRID_ROUTER_URL'] = routerUrl;
   process.env['SHAREGRID_LISTEN_PORT'] = String(listenPort);
   process.env['SHAREGRID_LISTEN_HOST'] = '127.0.0.1';
-  process.env['SHAREGRID_HEARTBEAT_INTERVAL'] = '30';
+  process.env['SHAREGRID_HEARTBEAT_INTERVAL'] = process.env['SHAREGRID_HEARTBEAT_INTERVAL'] ?? '30';
   process.env['SHAREGRID_MODELS_DIR'] = '/tmp';
+  process.env['SHAREGRID_MAX_SESSIONS'] = process.env['SHAREGRID_MAX_SESSIONS'] ?? '1';
 
   const config = loadConfig();
   const hostLogger = createComponentLogger('host-integration-test');
 
   const inferenceProxy = createInferenceProxy({ logger: hostLogger, llamaSocketPath });
-  const sessionManager = createSessionManager({ config, logger: hostLogger, inferenceProxy });
+
+  // Late-binding wrapper so sessionManager can call reportStatus before routerClient is assigned.
+  let routerClient: ReturnType<typeof createRouterClient> | null = null;
+  const onSessionCountChange = (n: number): void => { routerClient?.reportStatus(n); };
+
+  const sessionManager = createSessionManager({
+    config, logger: hostLogger, inferenceProxy,
+    maxSessions: config.SHAREGRID_MAX_SESSIONS,
+    onSessionCountChange,
+  });
 
   let currentToken = '';
   const modelName = 'test-model';
-  const routerClient = createRouterClient({
+  routerClient = createRouterClient({
     config,
     logger: hostLogger,
     modelName,
+    maxSessions: config.SHAREGRID_MAX_SESSIONS,
+    contextSize: config.SHAREGRID_MODEL_CONTEXT_SIZE,
+    getActiveSessions: () => sessionManager.getActiveSessions(),
     onRegistered: (info) => {
       currentToken = info.currentToken;
       const state: TokenState = {

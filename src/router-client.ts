@@ -23,6 +23,7 @@ import {
   type RegistrationAck,
   type HeartbeatPayload,
   type HeartbeatAck,
+  type HostStatusUpdate,
 } from '@sharegrid/shared/protocol';
 import type { Config } from './config.js';
 
@@ -46,6 +47,12 @@ export interface RouterClientDeps {
   config: Config;
   logger: Logger;
   modelName: string;
+  /** Max concurrent sessions (sent in RegistrationPayload). */
+  maxSessions: number;
+  /** Llama.cpp context size (sent in RegistrationPayload). */
+  contextSize: number;
+  /** Returns the current active session count (sent in HeartbeatPayload + host_status_update). */
+  getActiveSessions: () => number;
   onRegistered: (info: RegisteredInfo) => void;
   onTokenUpdate: (update: TokenUpdate) => void;
   onDisconnect: () => void;
@@ -59,6 +66,8 @@ export interface RouterClient {
   getTlsCert(): string;
   getTlsKey(): string;
   getTlsFingerprint(): string;
+  /** Send an immediate host_status_update with the given activeSessions count. No-op if not registered or socket gone. */
+  reportStatus(activeSessions: number): void;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,7 +79,7 @@ const BACKOFF_CAP_MS = 60_000;
 const PREVIOUS_TOKEN_TTL_MS = 60_000;
 
 export function createRouterClient(deps: RouterClientDeps): RouterClient {
-  const { config, logger, modelName, onRegistered, onTokenUpdate, onDisconnect } = deps;
+  const { config, logger, modelName, maxSessions, contextSize, getActiveSessions, onRegistered, onTokenUpdate, onDisconnect } = deps;
   const log = logger.child({ component: 'router-client' });
 
   // ── TLS keypair (generated once, held in memory) ──────────────────────────
@@ -224,6 +233,8 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
         tlsFingerprint,
         roleKey,
         listenHost,
+        contextSize,
+        maxSessions,
       };
       sendMessage(sock, payload);
     });
@@ -242,6 +253,7 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
         v: PROTOCOL_VERSION,
         type: 'heartbeat',
         hostId,
+        activeSessions: getActiveSessions(),
       };
       sendMessage(sock, hb);
     }, config.SHAREGRID_HEARTBEAT_INTERVAL * 1000);
@@ -343,6 +355,17 @@ export function createRouterClient(deps: RouterClientDeps): RouterClient {
     getTlsCert: () => tlsCert,
     getTlsKey: () => tlsKey,
     getTlsFingerprint: () => tlsFingerprint,
+
+    reportStatus(activeSessions: number): void {
+      if (hostId === '' || socket === null || socket.destroyed) return;
+      const upd: HostStatusUpdate = {
+        v: PROTOCOL_VERSION,
+        type: 'host_status_update',
+        hostId,
+        activeSessions,
+      };
+      sendMessage(socket, upd);
+    },
 
     async start(): Promise<void> {
       listenHost = config.SHAREGRID_LISTEN_HOST;

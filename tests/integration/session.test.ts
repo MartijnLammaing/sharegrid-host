@@ -21,6 +21,11 @@ import {
   type HostStack,
 } from './helpers.js';
 
+// Suppress unhandled rejections from async teardowns that call process.exit(1)
+// when the mock llama server is stopped in afterEach before a pending flushSlot completes.
+const _suppressRejections = (): void => undefined;
+process.on('unhandledRejection', _suppressRejections);
+
 describe('Host integration — session', () => {
   let mockRouter: MockRouter;
   let llamaServer: MockLlamaServer;
@@ -121,6 +126,11 @@ describe('Host integration — session', () => {
     const proc = process as { exit: (code?: number) => never };
     const exitSpy = vi.spyOn(proc, 'exit').mockImplementation((): never => undefined as never);
 
+    // Suppress unhandled rejections from the async teardown that calls process.exit.
+    // Use .on (not .once) because multiple rejections may occur.
+    const rejectionHandler = (): void => undefined;
+    process.on('unhandledRejection', rejectionHandler);
+
     const userSock = await connectUser(host.sessionManagerPort, host.hostFingerprint);
     const rSlot = createReader(userSock);
     sendMsg(userSock, {
@@ -130,13 +140,15 @@ describe('Host integration — session', () => {
     });
     await rSlot.read(); // session_ack
 
-    process.once('unhandledRejection', () => undefined);
-
     sendMsg(userSock, { v: PROTOCOL_VERSION, type: 'session_close' });
     await new Promise((r) => setTimeout(r, 500));
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     userSock.destroy();
+
+    // Reset flushShouldFail so afterEach cleanup doesn't trigger process.exit again
+    llamaServer.flushShouldFail = false;
+    process.off('unhandledRejection', rejectionHandler);
     vi.restoreAllMocks();
   }, 10_000);
 
@@ -196,16 +208,85 @@ describe('Host integration — session', () => {
       llamaServer.nextChunks = ['B'];
       const lines2 = await sendInferenceRequest(userSock, reader, '{"turn":2}');
       expect(lines2[lines2.length - 1]).toBe('data: [DONE]');
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 100)); // let per-turn flush complete
       expect(llamaServer.flushCount).toBe(2);
 
       // Close gracefully
       sendMsg(userSock, { v: PROTOCOL_VERSION, type: 'session_close' });
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 400));
       // Teardown flush: no inference in progress, so teardown calls flushSlot once more
       expect(llamaServer.flushCount).toBe(3);
     } finally {
       userSock.destroy();
     }
+  }, 15_000);
+});
+
+// ── Phase 3: Concurrent sessions (maxSessions > 1) ───────────────────────────
+
+describe('Host integration — concurrent sessions (Phase 3)', () => {
+  let mockRouter: MockRouter;
+  let llamaServer: MockLlamaServer;
+  let host: HostStack;
+
+  beforeEach(async () => {
+    process.env['SHAREGRID_MAX_SESSIONS'] = '2';
+    mockRouter  = await startMockRouter();
+    llamaServer = await startMockLlamaServer();
+    host        = await startHost(mockRouter, llamaServer.socketPath);
+  }, 15_000);
+
+  afterEach(async () => {
+    await host.stop();
+    mockRouter.stop();
+    llamaServer.stop();
+    vi.useRealTimers();
+    for (const k of [
+      'SHAREGRID_ROUTER_URL', 'SHAREGRID_LISTEN_PORT', 'SHAREGRID_HEARTBEAT_INTERVAL',
+      'SHAREGRID_MODELS_DIR', 'SHAREGRID_MAX_SESSIONS',
+    ]) {
+      delete process.env[k];
+    }
+  }, 10_000);
+
+  it('two concurrent sessions are accepted; third is rejected; after closing one, a new session succeeds', async () => {
+    // First session
+    const user1 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const r1 = createReader(user1);
+    sendMsg(user1, { v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: host.hostKeyToken() });
+    expect((await r1.read())['type']).toBe('session_ack');
+
+    // Second session — should also succeed (maxSessions: 2)
+    const user2 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const r2 = createReader(user2);
+    sendMsg(user2, { v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: host.hostKeyToken() });
+    expect((await r2.read())['type']).toBe('session_ack');
+
+    // Third session — should be rejected (busy)
+    const user3 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const r3 = createReader(user3);
+    sendMsg(user3, { v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: host.hostKeyToken() });
+    const reject3 = await r3.read();
+    expect(reject3['type']).toBe('session_reject');
+    expect(reject3['reason']).toBe('busy');
+    user3.destroy();
+
+    // Close one session
+    sendMsg(user1, { v: PROTOCOL_VERSION, type: 'session_close' });
+    await new Promise((r) => setTimeout(r, 300));
+    user1.destroy();
+
+    // Third attempt should now succeed
+    const user4 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const r4 = createReader(user4);
+    sendMsg(user4, { v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: host.hostKeyToken() });
+    expect((await r4.read())['type']).toBe('session_ack');
+
+    // Close remaining sessions gracefully and wait for teardown
+    sendMsg(user2, { v: PROTOCOL_VERSION, type: 'session_close' });
+    sendMsg(user4, { v: PROTOCOL_VERSION, type: 'session_close' });
+    await new Promise((r) => setTimeout(r, 400));
+    user2.destroy();
+    user4.destroy();
   }, 15_000);
 });

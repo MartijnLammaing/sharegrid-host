@@ -49,6 +49,10 @@ export interface SessionManagerDeps {
   config: Config;
   logger: Logger;
   inferenceProxy: InferenceProxy;
+  /** Max concurrent sessions (1–32). */
+  maxSessions: number;
+  /** Called whenever the active session count changes. */
+  onSessionCountChange: (activeSessions: number) => void;
 }
 
 export interface SessionManager {
@@ -60,6 +64,8 @@ export interface SessionManager {
   updateTokens(state: TokenState): void;
   /** Set whether new sessions should be accepted. */
   setRegistered(flag: boolean): void;
+  /** Current occupied slot count. */
+  getActiveSessions(): number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,26 +125,31 @@ export function validateToken(
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function createSessionManager(deps: SessionManagerDeps): SessionManager {
-  const { config, logger, inferenceProxy } = deps;
+  const { config, logger, inferenceProxy, maxSessions, onSessionCountChange } = deps;
   const log = logger.child({ component: 'session-manager' });
 
   // ── State ─────────────────────────────────────────────────────────────────
   let server: TLSServer | null = null;
   let registered = false;
-  let slotOccupied = false;
+  const activeSlots = new Set<number>();
   let tokenState: TokenState | null = null;
 
-  // ── Session slot ──────────────────────────────────────────────────────────
+  // ── Session slots ────────────────────────────────────────────────────────
 
-  function acquireSlot(): boolean {
-    // Synchronous check-and-set — single JS event loop thread guarantees atomicity.
-    if (slotOccupied) return false;
-    slotOccupied = true;
-    return true;
+  function acquireSlot(): number | null {
+    for (let i = 0; i < maxSessions; i++) {
+      if (!activeSlots.has(i)) {
+        activeSlots.add(i);
+        onSessionCountChange(activeSlots.size);
+        return i;
+      }
+    }
+    return null;
   }
 
-  function releaseSlot(): void {
-    slotOccupied = false;
+  function releaseSlot(slotId: number): void {
+    activeSlots.delete(slotId);
+    onSessionCountChange(activeSlots.size);
   }
 
   // ── NDJSON framing ────────────────────────────────────────────────────────
@@ -164,6 +175,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     idleTimer: NodeJS.Timeout | null,
     inferenceController: AbortController | null,
     inferencePromise: Promise<void> | null,
+    slotId: number | null,
   ): Promise<void> {
     if (idleTimer !== null) clearTimeout(idleTimer);
 
@@ -174,17 +186,19 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (inferencePromise !== null) {
         await inferencePromise;
       }
-    } else {
+    } else if (slotId !== null) {
       // No active inference — flush the slot ourselves.
-      const erased = await inferenceProxy.flushSlot();
+      const erased = await inferenceProxy.flushSlot(slotId);
       if (!erased) {
-        log.error('slot erase failed after session teardown — exiting');
+        log.error({ slotId }, 'slot erase failed after session teardown — exiting');
         process.exit(1);
       }
     }
 
-    releaseSlot();
-    log.info('session torn down; slot released');
+    if (slotId !== null) {
+      releaseSlot(slotId);
+      log.info({ slotId }, 'session torn down; slot released');
+    }
 
     if (!sock.destroyed) {
       sock.end();
@@ -204,6 +218,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     let buf = '';
     let sessionOpen = false;
+    let slotId: number | null = null;
     let idleTimer: NodeJS.Timeout | null = null;
     let tornDown = false;
 
@@ -228,7 +243,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async function doTeardown(): Promise<void> {
       if (tornDown) return;
       tornDown = true;
-      await teardown(sock, idleTimer, inferenceController, inferencePromise);
+      await teardown(sock, idleTimer, inferenceController, inferencePromise, slotId);
       idleTimer = null;
       inferenceController = null;
       inferencePromise = null;
@@ -321,13 +336,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       }
 
       // Acquire slot.
-      if (!acquireSlot()) {
+      const acquired = acquireSlot();
+      if (acquired === null) {
         const r: SessionReject = { v: PROTOCOL_VERSION, type: 'session_reject', reason: 'busy' };
         writeMessage(sock, r);
         sock.end();
         log.info('session rejected: slot busy');
         return;
       }
+      slotId = acquired;
 
       sessionOpen = true;
       resetIdleTimer();
@@ -358,21 +375,28 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           writeMessage(sock, chunk);
         },
         controller.signal,
+        slotId!,
       );
       inferencePromise = promise;
 
       await promise;
 
-      // Clear tracking now that the turn has settled.
+      // Clear tracking before calling flushSlot so teardown doesn't double-flush
+      // if the socket happens to close concurrently at this exact moment.
       inferenceController = null;
       inferencePromise = null;
 
+      // Normal completion (no abort): forwardInference did NOT call flushSlot.
+      // Call it ourselves to wipe the KV cache between turns.
+      if (!controller.signal.aborted) {
+        const erased = await inferenceProxy.flushSlot(slotId!);
+        if (!erased) {
+          log.error({ slotId }, 'slot erase failed after inference turn — exiting');
+          process.exit(1);
+        }
+      }
+
       log.info('inference turn complete');
-      // KV cache is intentionally left intact so llama.cpp can reuse the
-      // cached prefix on the next turn (OpenAI-compatible clients always
-      // resend the full conversation history, so the prefix hit is guaranteed).
-      // teardown() flushes the slot when the session ends, preventing any
-      // bleed to the next user session.
       // Session loop continues — wait for next inference_request
     }
 
@@ -428,6 +452,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     setRegistered(flag: boolean): void {
       registered = flag;
       log.info({ registered: flag }, 'registered state updated');
+    },
+
+    getActiveSessions(): number {
+      return activeSlots.size;
     },
   };
 }
