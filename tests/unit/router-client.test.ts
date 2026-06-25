@@ -20,6 +20,7 @@ const config = {
   SHAREGRID_MODELS_DIR: '/data/models',
   SHAREGRID_LISTEN_HOST: '10.0.0.1',
   SHAREGRID_MODEL_CONTEXT_SIZE: 32768,
+  SHAREGRID_MAX_SESSIONS: 4,
   mode: 'lan' as const,
 };
 
@@ -50,7 +51,13 @@ function makeClient(overrides?: { onRegistered?: () => void; onTokenUpdate?: (u:
   const onTokenUpdate = vi.fn(overrides?.onTokenUpdate ?? (() => undefined));
   const onDisconnect = vi.fn(overrides?.onDisconnect ?? (() => undefined));
 
-  const client = createRouterClient({ config, logger, modelName: 'test-model', onRegistered, onTokenUpdate, onDisconnect });
+  const client = createRouterClient({
+    config, logger, modelName: 'test-model',
+    maxSessions: 4,
+    contextSize: 32768,
+    getActiveSessions: () => 0,
+    onRegistered, onTokenUpdate, onDisconnect,
+  });
   return { client, onRegistered, onTokenUpdate, onDisconnect };
 }
 
@@ -105,6 +112,8 @@ describe('RouterClient (host)', () => {
     expect(typeof payload['tlsFingerprint']).toBe('string');
     expect(payload['tlsFingerprint']).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(payload['roleKey']).toBe('testHostSecret');
+    expect(payload['maxSessions']).toBe(4);
+    expect(payload['contextSize']).toBe(32768);
 
     expect(onRegistered).toHaveBeenCalledOnce();
     const regInfo = (onRegistered.mock.calls as unknown[][])[0]![0] as Record<string, unknown>;
@@ -132,6 +141,11 @@ describe('RouterClient (host)', () => {
 
     // Advance exactly one heartbeat interval to fire the setInterval callback
     await vi.advanceTimersByTimeAsync(config.SHAREGRID_HEARTBEAT_INTERVAL * 1000);
+
+    // The heartbeat payload must include activeSessions
+    const heartbeatMsg = sock.parsedMessages().find((m) => m['type'] === 'heartbeat');
+    expect(heartbeatMsg).toBeDefined();
+    expect(heartbeatMsg!['activeSessions']).toBe(0);
 
     // The heartbeat payload should now be written; inject ack
     sock.inject({ v: PROTOCOL_VERSION, type: 'heartbeat_ack', hostKeyToken: 'token-2' });
@@ -203,7 +217,11 @@ describe('RouterClient (host)', () => {
     const onDisconnect = vi.fn();
     const { client } = makeClient({ onDisconnect });
     // Temporarily swap config by creating a raw client with the bad config
-    const badClient = createRouterClient({ config: badConfig, logger, modelName: 'test-model', onRegistered: vi.fn(), onTokenUpdate: vi.fn(), onDisconnect });
+    const badClient = createRouterClient({
+      config: badConfig, logger, modelName: 'test-model',
+      maxSessions: 4, contextSize: 32768, getActiveSessions: () => 0,
+      onRegistered: vi.fn(), onTokenUpdate: vi.fn(), onDisconnect,
+    });
 
     await expect(badClient.start()).rejects.toThrow();
     // onDisconnect must NOT have been called — we never connected
@@ -228,5 +246,54 @@ describe('RouterClient (host)', () => {
 
     expect(onDisconnect).toHaveBeenCalled();
     await client.stop();
+  });
+
+  // ── Phase 3: reportStatus ──────────────────────────────────────────────────
+
+  it('reportStatus sends a host_status_update message when registered and socket is alive', async () => {
+    const sock = new MockSocket();
+    mockConnect.mockResolvedValueOnce(sock);
+
+    const { client } = makeClient();
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 10));
+    sock.inject({ v: PROTOCOL_VERSION, type: 'register_ack', hostId: 'h1', hostKeyToken: 'tok', routerPublicKey: 'pub' });
+    await startPromise;
+
+    client.reportStatus(2);
+
+    const statusMsg = sock.parsedMessages().find((m) => m['type'] === 'host_status_update');
+    expect(statusMsg).toBeDefined();
+    expect(statusMsg!['hostId']).toBe('h1');
+    expect(statusMsg!['activeSessions']).toBe(2);
+
+    await client.stop();
+  });
+
+  it('reportStatus is a no-op when not yet registered', () => {
+    const sock = new MockSocket();
+    mockConnect.mockResolvedValueOnce(sock);
+
+    const { client } = makeClient();
+    // Don't start — no registration yet
+    client.reportStatus(1);
+
+    expect(sock.written).toHaveLength(0);
+  });
+
+  it('reportStatus is a no-op when the socket is destroyed', async () => {
+    const sock = new MockSocket();
+    mockConnect.mockResolvedValueOnce(sock);
+
+    const { client } = makeClient();
+    const startPromise = client.start();
+    await new Promise((r) => setTimeout(r, 10));
+    sock.inject({ v: PROTOCOL_VERSION, type: 'register_ack', hostId: 'h1', hostKeyToken: 'tok', routerPublicKey: 'pub' });
+    await startPromise;
+
+    await client.stop();
+    const msgCountBefore = sock.parsedMessages().length;
+    client.reportStatus(1);
+    expect(sock.parsedMessages().length).toBe(msgCountBefore);
   });
 });

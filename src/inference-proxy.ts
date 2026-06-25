@@ -51,10 +51,11 @@ export interface InferenceProxy {
     body: string,
     onChunk: (sseLine: string) => void,
     signal: AbortSignal,
+    slotId: number,
   ): Promise<void>;
 
   /** Returns true on HTTP 2xx, false on any error or non-2xx status. */
-  flushSlot(): Promise<boolean>;
+  flushSlot(slotId: number): Promise<boolean>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -78,6 +79,7 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
     body: string,
     onChunk: (sseLine: string) => void,
     signal: AbortSignal,
+    slotId: number,
   ): Promise<void> {
     return new Promise<void>((resolve) => {
       let settled = false;
@@ -89,13 +91,18 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
         }
       };
 
+      // Inject id_slot into the request body so llama.cpp uses the correct KV-cache slot.
+      const parsedBody = JSON.parse(body) as Record<string, unknown>;
+      parsedBody['id_slot'] = slotId;
+      const outBody = JSON.stringify(parsedBody);
+
       // ── Abort handling ──────────────────────────────────────────────────
 
       const onAbort = (): void => {
         req.destroy();
         // flushSlot so the KV cache is cleared even though the Session Manager
         // won't call it (the socket close interrupts normal teardown flow).
-        void flushSlot().then(finish);
+        void flushSlot(slotId).then(finish);
       };
       signal.addEventListener('abort', onAbort, { once: true });
 
@@ -112,7 +119,7 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(body),
+            'Content-Length': Buffer.byteLength(outBody),
           },
         },
         (res) => {
@@ -167,25 +174,25 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
         finish();
       });
 
-      req.write(body);
+      req.write(outBody);
       req.end();
     });
   }
 
   // ── flushSlot ─────────────────────────────────────────────────────────────
 
-  async function flushSlot(): Promise<boolean> {
+  async function flushSlot(slotId: number): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
         req.destroy();
-        log.error('llama.cpp DELETE /slots/0 timed out');
+        log.error({ slotId }, 'llama.cpp DELETE /slots/%d timed out', slotId);
         resolve(false);
       }, FLUSH_TIMEOUT_MS);
 
       const req = httpRequest(
         {
           socketPath: llamaSocketPath,
-          path: '/slots/0',
+          path: `/slots/${slotId}`,
           method: 'DELETE',
         },
         (res) => {
@@ -199,13 +206,13 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
               (res.statusCode >= 200 && res.statusCode < 300) || res.statusCode === 404
             );
             if (!ok) {
-              log.error({ statusCode: res.statusCode }, 'llama.cpp slot erase returned non-2xx');
+              log.error({ slotId, statusCode: res.statusCode }, 'llama.cpp slot erase returned non-2xx');
             }
             resolve(ok);
           });
           res.on('error', (err) => {
             clearTimeout(timer);
-            log.error({ err }, 'llama.cpp slot erase response error');
+            log.error({ slotId, err }, 'llama.cpp slot erase response error');
             resolve(false);
           });
         },
@@ -213,7 +220,7 @@ export function createInferenceProxy(deps: InferenceProxyDeps): InferenceProxy {
 
       req.on('error', (err) => {
         clearTimeout(timer);
-        log.error({ err }, 'llama.cpp slot erase request error');
+        log.error({ slotId, err }, 'llama.cpp slot erase request error');
         resolve(false);
       });
 

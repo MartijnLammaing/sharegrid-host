@@ -105,6 +105,9 @@ describe('Host integration — router reconnect', () => {
       config: cfg,
       logger: hostLogger,
       modelName: 'test-model',
+      maxSessions: 1,
+      contextSize: 4096,
+      getActiveSessions: () => 0,
       onRegistered: vi.fn(),
       onTokenUpdate: vi.fn(),
       onDisconnect,
@@ -115,4 +118,72 @@ describe('Host integration — router reconnect', () => {
 
     badRouter.stop();
   }, 10_000);
+});
+
+// ── Phase 3: Status reporting ─────────────────────────────────────────────────
+
+describe('Host integration — status reporting (Phase 3)', () => {
+  let mockRouter: MockRouter;
+  let llamaServer: MockLlamaServer;
+  let host: HostStack;
+
+  beforeEach(async () => {
+    process.env['SHAREGRID_MAX_SESSIONS'] = '2';
+    process.env['SHAREGRID_HEARTBEAT_INTERVAL'] = '2';
+    mockRouter  = await startMockRouter();
+    llamaServer = await startMockLlamaServer();
+    host        = await startHost(mockRouter, llamaServer.socketPath);
+  }, 15_000);
+
+  afterEach(async () => {
+    await host.stop();
+    mockRouter.stop();
+    llamaServer.stop();
+    for (const k of ['SHAREGRID_ROUTER_URL', 'SHAREGRID_LISTEN_PORT', 'SHAREGRID_HEARTBEAT_INTERVAL',
+      'SHAREGRID_MODEL_NAME', 'SHAREGRID_MODEL_CONTEXT_SIZE', 'SHAREGRID_MAX_SESSIONS', 'SHAREGRID_MODELS_DIR']) {
+      delete process.env[k];
+    }
+  }, 15_000);
+
+  it('sends host_status_update with activeSessions: 1 on session open and activeSessions: 0 on close', async () => {
+    const userSock = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const reader = createReader(userSock);
+    sendMsg(userSock, { v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: host.hostKeyToken() });
+    expect((await reader.read())['type']).toBe('session_ack');
+
+    // Wait for the host_status_update to be sent
+    await new Promise((r) => setTimeout(r, 200));
+
+    const statusUpdates = mockRouter.receivedMessages.filter((m) => m['type'] === 'host_status_update');
+    expect(statusUpdates.length).toBeGreaterThanOrEqual(1);
+    expect(statusUpdates[0]!['activeSessions']).toBe(1);
+
+    // Close the session
+    sendMsg(userSock, { v: PROTOCOL_VERSION, type: 'session_close' });
+    await new Promise((r) => setTimeout(r, 300));
+    userSock.destroy();
+
+    // Wait for the second host_status_update
+    await new Promise((r) => setTimeout(r, 200));
+
+    const statusUpdatesAfter = mockRouter.receivedMessages.filter((m) => m['type'] === 'host_status_update');
+    const lastUpdate = statusUpdatesAfter[statusUpdatesAfter.length - 1]!;
+    expect(lastUpdate['activeSessions']).toBe(0);
+  }, 15_000);
+
+  it('heartbeat messages carry the correct activeSessions value', async () => {
+    const userSock = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const reader = createReader(userSock);
+    sendMsg(userSock, { v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: host.hostKeyToken() });
+    await reader.read(); // session_ack
+
+    // Wait for at least one heartbeat (interval is 2s, plus registration time)
+    await new Promise((r) => setTimeout(r, 4_000));
+
+    const heartbeats = mockRouter.receivedMessages.filter((m) => m['type'] === 'heartbeat');
+    expect(heartbeats.length).toBeGreaterThanOrEqual(1);
+    expect(heartbeats[0]!['activeSessions']).toBe(1);
+
+    userSock.destroy();
+  }, 12_000);
 });

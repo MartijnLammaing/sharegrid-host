@@ -29,6 +29,7 @@ describe('loadConfig', () => {
       delete process.env[key];
     }
     delete process.env['SHAREGRID_HEARTBEAT_INTERVAL'];
+    delete process.env['SHAREGRID_MAX_SESSIONS'];
   });
 
   async function load() {
@@ -140,5 +141,26 @@ describe('loadConfig', () => {
     delete process.env['SHAREGRID_HEARTBEAT_INTERVAL'];
     const config = await load();
     expect(config.SHAREGRID_HEARTBEAT_INTERVAL).toBe(30);
+  });
+
+  // ── Phase 3: SHAREGRID_MAX_SESSIONS ───────────────────────────────────────
+
+  it('defaults SHAREGRID_MAX_SESSIONS to 1 when not set', async () => {
+    Object.assign(process.env, validEnv);
+    delete process.env['SHAREGRID_MAX_SESSIONS'];
+    const config = await load();
+    expect(config.SHAREGRID_MAX_SESSIONS).toBe(1);
+  });
+
+  it.each(['1', '4', '32'])('accepts SHAREGRID_MAX_SESSIONS: %s', async (val) => {
+    Object.assign(process.env, validEnv, { SHAREGRID_MAX_SESSIONS: val });
+    const config = await load();
+    expect(config.SHAREGRID_MAX_SESSIONS).toBe(Number(val));
+  });
+
+  it.each(['0', '33', '1.5'])('exits with code 1 for invalid SHAREGRID_MAX_SESSIONS: %s', async (val) => {
+    Object.assign(process.env, validEnv, { SHAREGRID_MAX_SESSIONS: val });
+    await expect(load()).rejects.toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

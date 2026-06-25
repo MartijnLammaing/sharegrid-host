@@ -53,7 +53,7 @@ async function main(): Promise<void> {
   );
 
   // 3. Launch llama-server and wait for the Unix socket to be ready.
-  await launchLlama({ activeModelPath: activeModel.path, contextSize: config.SHAREGRID_MODEL_CONTEXT_SIZE, logger });
+  await launchLlama({ activeModelPath: activeModel.path, contextSize: config.SHAREGRID_MODEL_CONTEXT_SIZE, maxSessions: config.SHAREGRID_MAX_SESSIONS, logger });
 
   const modelName = activeModel.name;
 
@@ -61,17 +61,31 @@ async function main(): Promise<void> {
   const inferenceProxy = createInferenceProxy({ logger });
 
   // 5. Session manager.
-  const sessionManager = createSessionManager({ config, logger, inferenceProxy });
+  // Late-binding wrapper: sessionManager is created before routerClient,
+  // but onSessionCountChange is only called at runtime (session open/close).
+  let routerClient: ReturnType<typeof createRouterClient> | null = null;
+  const onSessionCountChange = (n: number): void => { routerClient?.reportStatus(n); };
+
+  const sessionManager = createSessionManager({
+    config,
+    logger,
+    inferenceProxy,
+    maxSessions: config.SHAREGRID_MAX_SESSIONS,
+    onSessionCountChange,
+  });
 
   // Stable registration state — populated on first onRegistered and reused in onTokenUpdate.
   let registrationHostId = '';
   let registrationRouterPublicKey = '';
 
   // 6. Router client — callbacks link the two components.
-  const routerClient = createRouterClient({
+  routerClient = createRouterClient({
     config,
     logger,
     modelName,
+    maxSessions: config.SHAREGRID_MAX_SESSIONS,
+    contextSize: config.SHAREGRID_MODEL_CONTEXT_SIZE,
+    getActiveSessions: () => sessionManager.getActiveSessions(),
     onRegistered: (info) => {
       registrationHostId = info.hostId;
       registrationRouterPublicKey = info.routerPublicKey;
@@ -120,7 +134,7 @@ async function main(): Promise<void> {
     // Give any active session a grace period to drain.
     await sleep(DRAIN_TIMEOUT_MS);
 
-    await routerClient.stop();
+    if (routerClient !== null) await routerClient.stop();
     await sessionManager.stop();
     logger.info('graceful shutdown complete');
     process.exit(0);

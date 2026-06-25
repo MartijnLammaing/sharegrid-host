@@ -82,6 +82,7 @@ const config = {
   SHAREGRID_MODELS_DIR: '/data/models',
   SHAREGRID_LISTEN_HOST: '10.0.0.1',
   SHAREGRID_MODEL_CONTEXT_SIZE: 32768,
+  SHAREGRID_MAX_SESSIONS: 1,
   mode: 'lan' as const,
 };
 
@@ -91,7 +92,11 @@ const mockInferenceProxy = {
 };
 
 function makeManager() {
-  return createSessionManager({ config, logger, inferenceProxy: mockInferenceProxy });
+  return createSessionManager({
+    config, logger, inferenceProxy: mockInferenceProxy,
+    maxSessions: config.SHAREGRID_MAX_SESSIONS,
+    onSessionCountChange: () => {},
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -357,7 +362,7 @@ describe('SessionManager — inference loop', () => {
     const { sock } = await startAndOpen();
     const sseLines: string[] = [];
     mockInferenceProxy.forwardInference.mockImplementation(
-      (_body: string, onChunk: (line: string) => void) => {
+      (_body: string, onChunk: (line: string) => void, _signal: AbortSignal, _slotId: number) => {
         onChunk('data: {"choices":[{"delta":{"content":"hello"}}]}');
         onChunk('data: [DONE]');
         return Promise.resolve();
@@ -372,12 +377,13 @@ describe('SessionManager — inference loop', () => {
     expect(sseLines).toContain('data: [DONE]');
   });
 
-  it('flushSlot NOT called after normal inference completion (KV cache preserved for prefix reuse)', async () => {
+  it('flushSlot is called after normal inference completion (KV cache wiped between turns)', async () => {
     const { sock } = await startAndOpen();
     mockInferenceProxy.forwardInference.mockResolvedValue(undefined);
     sock.inject({ v: PROTOCOL_VERSION, type: 'inference_request', body: '{}' });
     await new Promise((r) => setTimeout(r, 20));
-    expect(mockInferenceProxy.flushSlot).not.toHaveBeenCalled();
+    expect(mockInferenceProxy.flushSlot).toHaveBeenCalledTimes(1);
+    expect(mockInferenceProxy.flushSlot).toHaveBeenCalledWith(0);
   });
 
   it('session accepts a second inference_request after first completes', async () => {
@@ -397,7 +403,7 @@ describe('SessionManager — inference loop', () => {
     let resolveForward!: () => void;
 
     mockInferenceProxy.forwardInference.mockImplementation(
-      (_body: string, _onChunk: unknown, signal: AbortSignal) => {
+      (_body: string, _onChunk: unknown, signal: AbortSignal, _slotId: number) => {
         capturedSignal = signal;
         return new Promise<void>((resolve) => { resolveForward = resolve; });
       },
@@ -508,4 +514,179 @@ describe('SessionManager — idle timer', () => {
 
   // 'resets idle timer on inference_request' test is written in host Phase 3
   // (implementation plan) alongside the full forwardInference implementation.
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 3: Multi-session capacity counter
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('SessionManager — multi-session capacity (Phase 3)', () => {
+  const { privateKey, publicKeyPem } = makeKeyPair();
+  const hostId = 'host-multi-session';
+
+  function makeValidState(): TokenState {
+    const token = makeToken(hostId, privateKey);
+    return { hostId, routerPublicKey: publicKeyPem, currentToken: token, previousToken: null, previousTokenExpiresAt: 0 };
+  }
+
+  let onSessionCountChange: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    capturedConnectionCallback = null;
+    vi.clearAllMocks();
+    mockInferenceProxy.flushSlot.mockResolvedValue(true);
+    mockInferenceProxy.forwardInference.mockResolvedValue(undefined);
+    onSessionCountChange = vi.fn();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  function makeManagerWithMaxSessions(maxSessions: number) {
+    return createSessionManager({
+      config, logger, inferenceProxy: mockInferenceProxy,
+      maxSessions,
+      onSessionCountChange,
+    });
+  }
+
+  async function startManager(maxSessions: number) {
+    const sm = makeManagerWithMaxSessions(maxSessions);
+    await sm.start('cert', 'key');
+    sm.updateTokens(makeValidState());
+    sm.setRegistered(true);
+    return sm;
+  }
+
+  function openSession(state: TokenState): MockTLSSocket {
+    const sock = new MockTLSSocket();
+    capturedConnectionCallback!(sock);
+    sock.inject({ v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: state.currentToken });
+    return sock;
+  }
+
+  async function tick(ms = 20) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  it('acquireSlot with maxSessions: 1 returns 0 on first call, null on second', async () => {
+    const sm = await startManager(1);
+    const state = makeValidState();
+    sm.updateTokens(state);
+
+    const sock1 = openSession(state);
+    await tick();
+    expect(sock1.lastMessage()['type']).toBe('session_ack');
+
+    // Need a fresh token for second attempt (token may have been consumed)
+    const state2 = makeValidState();
+    sm.updateTokens(state2);
+    const sock2 = openSession(state2);
+    await tick();
+    const msg = sock2.lastMessage();
+    expect(msg['type']).toBe('session_reject');
+    expect(msg['reason']).toBe('busy');
+  });
+
+  it('acquireSlot with maxSessions: 3 returns 0, 1, 2 on successive calls, null on fourth', async () => {
+    const sm = await startManager(3);
+    const state = makeValidState();
+    sm.updateTokens(state);
+
+    // First 3 should succeed
+    for (let i = 0; i < 3; i++) {
+      const s = makeValidState();
+      sm.updateTokens(s);
+      const sock = openSession(s);
+      await tick();
+      expect(sock.lastMessage()['type']).toBe('session_ack');
+    }
+
+    // Fourth should be rejected
+    const state4 = makeValidState();
+    sm.updateTokens(state4);
+    const sock4 = openSession(state4);
+    await tick();
+    expect(sock4.lastMessage()['type']).toBe('session_reject');
+    expect(sock4.lastMessage()['reason']).toBe('busy');
+  });
+
+  it('releasing a slot makes it available again', async () => {
+    const sm = await startManager(1);
+    const state = makeValidState();
+    sm.updateTokens(state);
+
+    const sock1 = openSession(state);
+    await tick();
+    expect(sock1.lastMessage()['type']).toBe('session_ack');
+
+    // Close to release the slot
+    sock1.close();
+    await tick(50);
+
+    // Now a new session should succeed
+    const state2 = makeValidState();
+    sm.updateTokens(state2);
+    const sock2 = openSession(state2);
+    await tick();
+    expect(sock2.lastMessage()['type']).toBe('session_ack');
+  });
+
+  it('onSessionCountChange is called after each acquire and release', async () => {
+    const sm = await startManager(2);
+    const state = makeValidState();
+    sm.updateTokens(state);
+
+    const sock1 = openSession(state);
+    await tick();
+    expect(onSessionCountChange).toHaveBeenLastCalledWith(1);
+
+    const state2 = makeValidState();
+    sm.updateTokens(state2);
+    openSession(state2);
+    await tick();
+    expect(onSessionCountChange).toHaveBeenLastCalledWith(2);
+
+    sock1.close();
+    await tick(50);
+    expect(onSessionCountChange).toHaveBeenLastCalledWith(1);
+  });
+
+  it('getActiveSessions() returns the current session count', async () => {
+    const sm = await startManager(3);
+    expect(sm.getActiveSessions()).toBe(0);
+
+    const state = makeValidState();
+    sm.updateTokens(state);
+    const sock1 = openSession(state);
+    await tick();
+    expect(sm.getActiveSessions()).toBe(1);
+
+    sock1.close();
+    await tick(50);
+    expect(sm.getActiveSessions()).toBe(0);
+  });
+
+  it('slotId is passed to forwardInference and flushSlot', async () => {
+    const sm = await startManager(3);
+    const state = makeValidState();
+    sm.updateTokens(state);
+    const sock = openSession(state);
+    await tick();
+
+    // Send an inference request — should pass slotId 0 (first slot)
+    sock.inject({ v: PROTOCOL_VERSION, type: 'inference_request', body: '{}' });
+    await tick(20);
+
+    expect(mockInferenceProxy.forwardInference).toHaveBeenCalledOnce();
+    const callArgs = mockInferenceProxy.forwardInference.mock.calls[0]!;
+    // forwardInference(body, onChunk, signal, slotId)
+    expect(callArgs[3]).toBe(0);
+
+    // Close to trigger teardown — flushSlot should be called with slotId 0
+    // (no inference in flight after forwardInference resolves)
+    mockInferenceProxy.forwardInference.mockClear();
+    sock.close();
+    await tick(50);
+
+    expect(mockInferenceProxy.flushSlot).toHaveBeenCalledWith(0);
+  });
 });

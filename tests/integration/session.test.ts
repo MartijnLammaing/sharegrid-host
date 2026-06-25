@@ -209,3 +209,68 @@ describe('Host integration — session', () => {
     }
   }, 15_000);
 });
+
+// ── Phase 3: Concurrent sessions (maxSessions > 1) ───────────────────────────
+
+describe('Host integration — concurrent sessions (Phase 3)', () => {
+  let mockRouter: MockRouter;
+  let llamaServer: MockLlamaServer;
+  let host: HostStack;
+
+  beforeEach(async () => {
+    process.env['SHAREGRID_MAX_SESSIONS'] = '2';
+    mockRouter  = await startMockRouter();
+    llamaServer = await startMockLlamaServer();
+    host        = await startHost(mockRouter, llamaServer.socketPath);
+  }, 15_000);
+
+  afterEach(async () => {
+    await host.stop();
+    mockRouter.stop();
+    llamaServer.stop();
+    vi.useRealTimers();
+    for (const k of [
+      'SHAREGRID_ROUTER_URL', 'SHAREGRID_LISTEN_PORT', 'SHAREGRID_HEARTBEAT_INTERVAL',
+      'SHAREGRID_MODELS_DIR', 'SHAREGRID_MAX_SESSIONS',
+    ]) {
+      delete process.env[k];
+    }
+  }, 10_000);
+
+  it('two concurrent sessions are accepted; third is rejected; after closing one, a new session succeeds', async () => {
+    // First session
+    const user1 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const r1 = createReader(user1);
+    sendMsg(user1, { v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: host.hostKeyToken() });
+    expect((await r1.read())['type']).toBe('session_ack');
+
+    // Second session — should also succeed (maxSessions: 2)
+    const user2 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const r2 = createReader(user2);
+    sendMsg(user2, { v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: host.hostKeyToken() });
+    expect((await r2.read())['type']).toBe('session_ack');
+
+    // Third session — should be rejected (busy)
+    const user3 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const r3 = createReader(user3);
+    sendMsg(user3, { v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: host.hostKeyToken() });
+    const reject3 = await r3.read();
+    expect(reject3['type']).toBe('session_reject');
+    expect(reject3['reason']).toBe('busy');
+    user3.destroy();
+
+    // Close one session
+    sendMsg(user1, { v: PROTOCOL_VERSION, type: 'session_close' });
+    await new Promise((r) => setTimeout(r, 300));
+    user1.destroy();
+
+    // Third attempt should now succeed
+    const user4 = await connectUser(host.sessionManagerPort, host.hostFingerprint);
+    const r4 = createReader(user4);
+    sendMsg(user4, { v: PROTOCOL_VERSION, type: 'session_open', hostKeyToken: host.hostKeyToken() });
+    expect((await r4.read())['type']).toBe('session_ack');
+
+    user2.destroy();
+    user4.destroy();
+  }, 15_000);
+});

@@ -57,14 +57,14 @@ describe('InferenceProxy', () => {
       });
 
       const proxy = createInferenceProxy({ logger });
-      await proxy.forwardInference('{"stream":true}', vi.fn(), new AbortController().signal);
+      await proxy.forwardInference('{"stream":true}', vi.fn(), new AbortController().signal, 0);
 
       expect(capturedOpts!['path']).toBe('/v1/chat/completions');
       expect(capturedOpts!['method']).toBe('POST');
       expect((capturedOpts!['headers'] as Record<string, string>)['Content-Type']).toBe('application/json');
     });
 
-    it('writes the body verbatim to the HTTP request', async () => {
+    it('writes the body with id_slot injected to the HTTP request', async () => {
       const body = '{"messages":[],"stream":true}';
       const req = new MockRequest();
 
@@ -78,9 +78,31 @@ describe('InferenceProxy', () => {
       });
 
       const proxy = createInferenceProxy({ logger });
-      await proxy.forwardInference(body, vi.fn(), new AbortController().signal);
+      await proxy.forwardInference(body, vi.fn(), new AbortController().signal, 0);
 
-      expect(req.written).toContain(body);
+      const written = JSON.parse(req.written[0]!) as Record<string, unknown>;
+      expect(written['messages']).toEqual([]);
+      expect(written['stream']).toBe(true);
+      expect(written['id_slot']).toBe(0);
+    });
+
+    it('injects id_slot: 3 when slotId is 3', async () => {
+      const req = new MockRequest();
+
+      mockRequest.mockImplementationOnce((_opts: unknown, cb: unknown) => {
+        const res = new MockResponse(200);
+        void Promise.resolve().then(() => {
+          (cb as (r: MockResponse) => void)(res);
+          res.emit('data', 'data: [DONE]\n');
+        });
+        return req;
+      });
+
+      const proxy = createInferenceProxy({ logger });
+      await proxy.forwardInference('{"stream":true}', vi.fn(), new AbortController().signal, 3);
+
+      const written = JSON.parse(req.written[0]!) as Record<string, unknown>;
+      expect(written['id_slot']).toBe(3);
     });
 
     it('calls onChunk for each non-empty SSE line', async () => {
@@ -98,7 +120,7 @@ describe('InferenceProxy', () => {
 
       const chunks: string[] = [];
       const proxy = createInferenceProxy({ logger });
-      await proxy.forwardInference('{}', (line) => chunks.push(line), new AbortController().signal);
+      await proxy.forwardInference('{}', (line) => chunks.push(line), new AbortController().signal, 0);
 
       expect(chunks).toContain('data: {"choices":[{"delta":{"content":"hello"}}]}');
       expect(chunks).toContain('data: {"choices":[{"delta":{"content":" world"}}]}');
@@ -118,7 +140,7 @@ describe('InferenceProxy', () => {
 
       const chunks: string[] = [];
       const proxy = createInferenceProxy({ logger });
-      await proxy.forwardInference('{}', (line) => chunks.push(line), new AbortController().signal);
+      await proxy.forwardInference('{}', (line) => chunks.push(line), new AbortController().signal, 0);
 
       expect(chunks.every((c) => c.length > 0)).toBe(true);
     });
@@ -136,7 +158,7 @@ describe('InferenceProxy', () => {
 
       const proxy = createInferenceProxy({ logger });
       await expect(
-        proxy.forwardInference('{}', vi.fn(), new AbortController().signal),
+        proxy.forwardInference('{}', vi.fn(), new AbortController().signal, 0),
       ).resolves.toBeUndefined();
     });
 
@@ -155,7 +177,7 @@ describe('InferenceProxy', () => {
 
       const proxy = createInferenceProxy({ logger });
       await expect(
-        proxy.forwardInference('{}', vi.fn(), new AbortController().signal),
+        proxy.forwardInference('{}', vi.fn(), new AbortController().signal, 0),
       ).resolves.toBeUndefined();
     });
 
@@ -172,7 +194,7 @@ describe('InferenceProxy', () => {
 
       const proxy = createInferenceProxy({ logger });
       await expect(
-        proxy.forwardInference('{}', vi.fn(), new AbortController().signal),
+        proxy.forwardInference('{}', vi.fn(), new AbortController().signal, 0),
       ).resolves.toBeUndefined();
     });
 
@@ -194,7 +216,7 @@ describe('InferenceProxy', () => {
       });
 
       const proxy = createInferenceProxy({ logger });
-      const inferencePromise = proxy.forwardInference('{}', vi.fn(), controller.signal);
+      const inferencePromise = proxy.forwardInference('{}', vi.fn(), controller.signal, 0);
 
       await Promise.resolve(); // let forwardInference reach httpRequest
       controller.abort();
@@ -223,7 +245,7 @@ describe('InferenceProxy', () => {
       });
 
       const proxy = createInferenceProxy({ logger });
-      const p = proxy.forwardInference('{}', vi.fn(), controller.signal);
+      const p = proxy.forwardInference('{}', vi.fn(), controller.signal, 0);
 
       await Promise.resolve();
       controller.abort();
@@ -249,7 +271,7 @@ describe('InferenceProxy', () => {
       });
 
       const proxy = createInferenceProxy({ logger });
-      const p = proxy.forwardInference('{}', vi.fn(), controller.signal);
+      const p = proxy.forwardInference('{}', vi.fn(), controller.signal, 0);
 
       await Promise.resolve();
       controller.abort();
@@ -266,7 +288,7 @@ describe('InferenceProxy', () => {
 
       const proxy = createInferenceProxy({ logger });
       await expect(
-        proxy.forwardInference('{}', vi.fn(), new AbortController().signal),
+        proxy.forwardInference('{}', vi.fn(), new AbortController().signal, 0),
       ).resolves.toBeUndefined();
     });
 
@@ -283,7 +305,7 @@ describe('InferenceProxy', () => {
 
       const proxy = createInferenceProxy({ logger });
       await expect(
-        proxy.forwardInference('{}', vi.fn(), new AbortController().signal),
+        proxy.forwardInference('{}', vi.fn(), new AbortController().signal, 0),
       ).resolves.toBeUndefined();
     });
   });
@@ -303,7 +325,7 @@ describe('InferenceProxy', () => {
       });
 
       const proxy = createInferenceProxy({ logger });
-      expect(await proxy.flushSlot()).toBe(true);
+      expect(await proxy.flushSlot(0)).toBe(true);
     });
 
     it('issues DELETE /slots/0', async () => {
@@ -320,9 +342,27 @@ describe('InferenceProxy', () => {
       });
 
       const proxy = createInferenceProxy({ logger });
-      await proxy.flushSlot();
+      await proxy.flushSlot(0);
       expect(capturedOptions!['path']).toBe('/slots/0');
       expect(capturedOptions!['method']).toBe('DELETE');
+    });
+
+    it('issues DELETE /slots/3 when slotId is 3', async () => {
+      const res = new MockResponse(200);
+      let capturedOptions: Record<string, unknown> | null = null;
+      mockRequest.mockImplementation((opts: unknown, callback: unknown) => {
+        capturedOptions = opts as Record<string, unknown>;
+        const req = new MockRequest();
+        void Promise.resolve().then(() => {
+          (callback as (r: MockResponse) => void)(res);
+          res.emit('end');
+        });
+        return req;
+      });
+
+      const proxy = createInferenceProxy({ logger });
+      await proxy.flushSlot(3);
+      expect(capturedOptions!['path']).toBe('/slots/3');
     });
 
     it('returns false on HTTP 500', async () => {
@@ -337,7 +377,7 @@ describe('InferenceProxy', () => {
       });
 
       const proxy = createInferenceProxy({ logger });
-      expect(await proxy.flushSlot()).toBe(false);
+      expect(await proxy.flushSlot(0)).toBe(false);
     });
 
     it('returns false on socket error', async () => {
@@ -348,7 +388,7 @@ describe('InferenceProxy', () => {
       });
 
       const proxy = createInferenceProxy({ logger });
-      expect(await proxy.flushSlot()).toBe(false);
+      expect(await proxy.flushSlot(0)).toBe(false);
     });
 
     it('returns false on timeout (5-second cap)', async () => {
@@ -359,7 +399,7 @@ describe('InferenceProxy', () => {
       });
 
       const proxy = createInferenceProxy({ logger });
-      const flushPromise = proxy.flushSlot();
+      const flushPromise = proxy.flushSlot(0);
 
       await vi.advanceTimersByTimeAsync(5_001);
 
