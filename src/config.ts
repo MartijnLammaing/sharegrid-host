@@ -39,6 +39,8 @@ const ConfigSchema = z
     SHAREGRID_HEARTBEAT_INTERVAL: z.coerce.number().int().positive().default(30),
     SHAREGRID_MODELS_DIR: z.string().min(1, 'must not be empty'),
     SHAREGRID_LISTEN_HOST: z.string().min(1, 'must not be empty'),
+    SHAREGRID_LLAMA_BINARY: z.string().min(1, 'must not be empty').default('/app/llama-server'),
+    SHAREGRID_SANDBOX_PROFILE: z.string().min(1, 'must not be empty').optional(),
     SHAREGRID_MODEL_CONTEXT_SIZE: z.coerce.number().int().positive().default(32768),
     SHAREGRID_MAX_SESSIONS: z.coerce.number().int().min(1).max(32).default(1),
   })
@@ -54,15 +56,21 @@ const ConfigSchema = z
         path: ['SHAREGRID_LISTEN_HOST'],
         message:
           mode === 'internet'
-            ? 'router is in internet mode — must be the host machine global IPv6 address that users connect to (e.g. 2001:db8::1); set by docker-run.sh'
-            : 'must be the host machine LAN IPv4 address that users connect to (e.g. 192.168.1.42); set by docker-run.sh',
+            ? 'router is in internet mode — must be the host machine global IPv6 address that users connect to (e.g. 2001:db8::1); set by the launch script (docker-run.sh or macos-run.sh)'
+            : 'must be the host machine LAN IPv4 address that users connect to (e.g. 192.168.1.42); set by the launch script (docker-run.sh or macos-run.sh)',
       });
     }
   });
 
-export type Config = z.infer<typeof ConfigSchema> & {
+type ConfigSchemaOutput = z.infer<typeof ConfigSchema>;
+
+export type Config = Omit<ConfigSchemaOutput, 'SHAREGRID_SANDBOX_PROFILE'> & {
   /** Router network mode, parsed from SHAREGRID_ROUTER_URL. */
   mode: NetworkMode;
+  /** Path to the llama-server binary to spawn. */
+  SHAREGRID_LLAMA_BINARY: string;
+  /** Optional path to a sandbox-exec SBPL profile (macOS native mode). */
+  SHAREGRID_SANDBOX_PROFILE: string | undefined;
 };
 
 export function loadConfig(): Config {
@@ -71,5 +79,9 @@ export function loadConfig(): Config {
     console.error('Configuration error:', JSON.stringify(result.error.flatten().fieldErrors, null, 2));
     process.exit(1);
   }
-  return { ...result.data, mode: modeFromUrl(result.data.SHAREGRID_ROUTER_URL) };
+  return {
+    ...result.data,
+    mode: modeFromUrl(result.data.SHAREGRID_ROUTER_URL),
+    SHAREGRID_SANDBOX_PROFILE: result.data.SHAREGRID_SANDBOX_PROFILE,
+  };
 }

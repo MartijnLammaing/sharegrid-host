@@ -1,0 +1,86 @@
+(version 1)
+
+; Parameters supplied by macos-run.sh via -D LLAMA_BINARY=<path> -D MODELS_DIR=<dir>
+
+; Log every Seatbelt denial to help profile tuning.
+(debug deny)
+
+; Deny anything that is not explicitly allowed.
+(deny default)
+
+; ── Process / execution ──────────────────────────────────────────────────────
+
+(allow process-exec*)
+(allow process-fork)
+(allow process-info* (target self))
+(deny process-info* (target others))
+(allow signal (target self))
+
+; ── System information and services ──────────────────────────────────────────
+
+(allow sysctl-read)
+(allow mach*)
+(allow ipc*)
+(allow system-socket)
+(allow system-fsctl)
+(allow system-info)
+
+; ── Executable mapping (required by dyld) ────────────────────────────────────
+
+(allow file-map-executable)
+
+; ── Root directory access for path resolution ────────────────────────────────
+
+(allow file-read* (literal "/"))
+(allow file-read-metadata (subpath "/Users"))
+(allow file-read-metadata (subpath "/private"))
+
+; ── Standard devices and temporary files ─────────────────────────────────────
+
+(allow file-read* file-write* (subpath "/private/tmp"))
+(allow file-read-metadata (literal "/tmp"))
+(allow file-read* (subpath "/dev"))
+
+; ── System libraries, frameworks, dyld caches ────────────────────────────────
+
+(allow file-read*
+  (subpath "/usr/lib")
+  (subpath "/usr/libexec")
+  (subpath "/usr/share")
+  (subpath "/System/Library")
+  (subpath "/private/var/db/dyld")
+  (subpath "/private/var/db/mds")
+  (subpath "/Library/Preferences")
+  (regex #"^/Users/[^/]+/Library/Preferences(/.*)?$"))
+
+; ── Model files and the llama-server binary ──────────────────────────────────
+
+(allow file-read* (literal (param "LLAMA_BINARY")))
+(allow file-read* (subpath (param "MODELS_DIR")))
+
+; ── Metal / GPU cache directories ────────────────────────────────────────────
+
+(allow file-read* file-write*
+  (regex #"^/private/var/folders/.*/C/com\.apple\.metal(/.*)?$")
+  (subpath "/Library/Caches/com.apple.metal")
+  (regex #"^/Users/[^/]+/Library/Caches/com\.apple\.metal(/.*)?$"))
+
+; ── Sensitive host paths (defense-in-depth verification) ─────────────────────
+
+(deny file-read-data (subpath "/etc"))
+(deny file-read-data (subpath "/private/etc"))
+
+; ── Network (Unix bind allowed; outbound/inbound blocked) ────────────────────
+
+(deny network-outbound)
+(deny network-inbound)
+(allow network-bind)
+
+; ── Metal / IOKit services ───────────────────────────────────────────────────
+
+(allow iokit-open
+  (iokit-user-client-class-regex "^IO.*")
+  (iokit-user-client-class-regex "^AGX.*")
+  (iokit-user-client-class-regex "^Apple.*"))
+(allow iokit-get-properties)
+(allow iokit-set-properties)

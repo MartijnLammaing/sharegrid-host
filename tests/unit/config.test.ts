@@ -30,6 +30,8 @@ describe('loadConfig', () => {
     }
     delete process.env['SHAREGRID_HEARTBEAT_INTERVAL'];
     delete process.env['SHAREGRID_MAX_SESSIONS'];
+    delete process.env['SHAREGRID_LLAMA_BINARY'];
+    delete process.env['SHAREGRID_SANDBOX_PROFILE'];
   });
 
   async function load() {
@@ -162,5 +164,33 @@ describe('loadConfig', () => {
     Object.assign(process.env, validEnv, { SHAREGRID_MAX_SESSIONS: val });
     await expect(load()).rejects.toThrow('process.exit called');
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  // ── Phase 4: configurable llama-server binary + sandbox profile ───────────
+
+  it('defaults SHAREGRID_LLAMA_BINARY to /app/llama-server when not set', async () => {
+    Object.assign(process.env, validEnv);
+    delete process.env['SHAREGRID_LLAMA_BINARY'];
+    const config = await load();
+    expect(config.SHAREGRID_LLAMA_BINARY).toBe('/app/llama-server');
+  });
+
+  it('accepts any non-empty SHAREGRID_LLAMA_BINARY', async () => {
+    Object.assign(process.env, validEnv, { SHAREGRID_LLAMA_BINARY: '/custom/llama-server' });
+    const config = await load();
+    expect(config.SHAREGRID_LLAMA_BINARY).toBe('/custom/llama-server');
+  });
+
+  it('sets SHAREGRID_SANDBOX_PROFILE to undefined when not set', async () => {
+    Object.assign(process.env, validEnv);
+    delete process.env['SHAREGRID_SANDBOX_PROFILE'];
+    const config = await load();
+    expect(config.SHAREGRID_SANDBOX_PROFILE).toBeUndefined();
+  });
+
+  it('accepts any non-empty SHAREGRID_SANDBOX_PROFILE', async () => {
+    Object.assign(process.env, validEnv, { SHAREGRID_SANDBOX_PROFILE: '/etc/sharegrid.sb' });
+    const config = await load();
+    expect(config.SHAREGRID_SANDBOX_PROFILE).toBe('/etc/sharegrid.sb');
   });
 });

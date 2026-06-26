@@ -11,27 +11,59 @@
 
 import { spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import path from 'node:path';
 import type { Logger } from 'pino';
 
-const LLAMA_BINARY = '/app/llama-server';
 const LLAMA_SOCKET_PATH = '/tmp/llama.sock';
 const READY_POLL_INTERVAL_MS = 500;
 const READY_TIMEOUT_MS = 120_000;
 
-export async function launchLlama(deps: { activeModelPath: string; contextSize: number; maxSessions: number; logger: Logger }): Promise<void> {
-  const { activeModelPath, contextSize, maxSessions, logger } = deps;
+export async function launchLlama(deps: {
+  activeModelPath: string;
+  contextSize: number;
+  maxSessions: number;
+  llamaBinary: string;
+  sandboxProfilePath: string | undefined;
+  logger: Logger;
+}): Promise<void> {
+  const { activeModelPath, contextSize, maxSessions, llamaBinary, sandboxProfilePath, logger } = deps;
   const log = logger.child({ component: 'llama-launcher' });
 
-  const args = [
+  const llamaArgs = [
     '--model', activeModelPath,
     '--host', LLAMA_SOCKET_PATH,
     '--parallel', String(maxSessions),
     '--ctx-size', String(contextSize),
   ];
 
-  log.info({ model: activeModelPath }, 'spawning llama-server');
+  let command: string;
+  let args: string[];
+  if (sandboxProfilePath !== undefined) {
+    command = 'sandbox-exec';
+    args = [
+      '-f', sandboxProfilePath,
+      '-D', `LLAMA_BINARY=${llamaBinary}`,
+      '-D', `MODELS_DIR=${path.dirname(activeModelPath)}`,
+      llamaBinary,
+      ...llamaArgs,
+    ];
+    log.info({ profile: sandboxProfilePath, binary: llamaBinary }, 'spawning llama-server inside sandbox-exec');
+  } else {
+    command = llamaBinary;
+    args = llamaArgs;
+    log.info({ binary: llamaBinary }, 'spawning llama-server');
+  }
 
-  const child = spawn(LLAMA_BINARY, args, {
+  // Remove any stale socket left by a previous llama-server run so the new
+  // process can bind to the fixed path.
+  try {
+    rmSync(LLAMA_SOCKET_PATH, { force: true });
+  } catch {
+    // Ignore permission errors; llama-server will fail with a clear bind error.
+  }
+
+  const child = spawn(command, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

@@ -53,7 +53,14 @@ async function main(): Promise<void> {
   );
 
   // 3. Launch llama-server and wait for the Unix socket to be ready.
-  await launchLlama({ activeModelPath: activeModel.path, contextSize: config.SHAREGRID_MODEL_CONTEXT_SIZE, maxSessions: config.SHAREGRID_MAX_SESSIONS, logger });
+  await launchLlama({
+    activeModelPath: activeModel.path,
+    contextSize: config.SHAREGRID_MODEL_CONTEXT_SIZE,
+    maxSessions: config.SHAREGRID_MAX_SESSIONS,
+    llamaBinary: config.SHAREGRID_LLAMA_BINARY,
+    sandboxProfilePath: config.SHAREGRID_SANDBOX_PROFILE,
+    logger,
+  });
 
   const modelName = activeModel.name;
 

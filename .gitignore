@@ -6,3 +6,6 @@ coverage/
 .env
 .env.*
 *.gguf
+.venv/
+macos-native/.build/
+macos-native/bin/

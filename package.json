@@ -8,7 +8,7 @@
     "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --outfile=dist/bundle.cjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/ tests/",
-    "test:unit": "vitest run tests/unit",
+    "test:unit": "vitest run tests/unit --exclude 'macos-native/**'",
     "test:integration": "vitest run tests/integration",
     "dev": "tsx src/index.ts"
   },

@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 --branch b9371 \
+COPY LLAMA_TAG .
+RUN tag=$(cat LLAMA_TAG) && git clone --depth 1 --branch "$tag" \
         https://github.com/ggml-org/llama.cpp /src/llama.cpp
 
 RUN cmake -S /src/llama.cpp -B /build \
