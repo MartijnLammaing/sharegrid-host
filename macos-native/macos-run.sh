@@ -121,7 +121,10 @@ fi
 
 if [[ ! -f "$HOST_DIR/dist/bundle.cjs" ]]; then
   log "Building host bundle..."
-  (cd "$HOST_DIR" && npm ci --ignore-scripts && npm run build)
+  (cd "$HOST_DIR" && \
+    npm ci --ignore-scripts && \
+    (cd sharegrid-shared && npm ci --ignore-scripts && npm run build) && \
+    npm run build)
 fi
 
 # ── Build llama-server if missing ─────────────────────────────────────────────
