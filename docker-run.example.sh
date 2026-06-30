@@ -31,7 +31,8 @@ docker run --cap-drop ALL \
   --ipc=none \
   --restart=on-failure \
   -p 9000:9000 \
-  -e SHAREGRID_ROUTER_URL="https://192.168.1.10:8443?fp=sha256:6059adc8a497ba0070f0f10af6ce130ae58a46c83e70c4ed98e12b5bfd01f98e&key=<host-secret-from-router-banner>" \
+  -e SHAREGRID_ROUTER_URL="aHR0cHM6Ly8xOTIuMTY4LjEuMTA6ODQ0Mz9mcD1zaGEyNTY6NjA1OWFkYzhhNDk3YmEwMDcwZjBmMTBhZjZjZTEzMGFlNThhNDZjODNlNzBjNGVkOThlMTJiNWJmZDAxZjk4ZSZrZXk9PGhvc3Qtc2VjcmV0LWZyb20tcm91dGVyLWJhbm5lcj4=" \
+  # Base64-encoded router URL — copy the SHAREGRID_HOST_ROUTER_URL value from the router's startup output.
   -e SHAREGRID_LISTEN_PORT=9000 \
   -e SHAREGRID_LISTEN_HOST=192.168.1.42 \
   sharegrid-host

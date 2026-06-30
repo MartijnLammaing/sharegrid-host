@@ -40,6 +40,9 @@ if [[ -z "${SHAREGRID_ROUTER_URL:-}" ]]; then
   exit 1
 fi
 
+# Decode base64-encoded router URL.
+SHAREGRID_ROUTER_URL=$(printf '%s' "$SHAREGRID_ROUTER_URL" | openssl base64 -A -d)
+
 # Derive the network mode from the router URL's `mode` query parameter.
 if [[ "$SHAREGRID_ROUTER_URL" == *"mode=internet"* ]]; then
   MODE=internet
